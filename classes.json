@@ -1,0 +1,91 @@
+{
+  "classes": [
+    {
+      "index": 0,
+      "name": "welding_gloves",
+      "original_id": 56,
+      "color": "#145902",
+      "prompts": ["welding gloves"]
+    },
+    {
+      "index": 1,
+      "name": "welding",
+      "original_id": 57,
+      "color": "#8e1e47",
+      "prompts": ["welding"]
+    },
+    {
+      "index": 2,
+      "name": "gas_mask",
+      "original_id": 58,
+      "color": "#907819",
+      "prompts": ["gas mask"]
+    },
+    {
+      "index": 3,
+      "name": "gloves",
+      "original_id": 59,
+      "color": "#72102f",
+      "prompts": ["gloves"]
+    },
+    {
+      "index": 4,
+      "name": "protective_headphones",
+      "original_id": 62,
+      "color": "#69c694",
+      "prompts": ["protective headphones"]
+    },
+    {
+      "index": 5,
+      "name": "helmet",
+      "original_id": 63,
+      "color": "#008060",
+      "prompts": ["helmet"]
+    },
+    {
+      "index": 6,
+      "name": "orange_vest",
+      "original_id": 64,
+      "color": "#512ef8",
+      "prompts": ["vest"]
+    },
+    {
+      "index": 7,
+      "name": "person",
+      "original_id": 65,
+      "color": "#c06060",
+      "prompts": ["worker"]
+    },
+    {
+      "index": 8,
+      "name": "mask",
+      "original_id": 67,
+      "color": "#e44bf0",
+      "prompts": ["mask"]
+    },
+    {
+      "index": 9,
+      "name": "welding_mask",
+      "original_id": 68,
+      "color": "#aa770d",
+      "prompts": ["welding mask"]
+    },
+    {
+      "index": 10,
+      "name": "glasses",
+      "original_id": 69,
+      "color": "#60e0c0",
+      "prompts": ["glasses"]
+    },
+    {
+      "index": 11,
+      "name": "railcar",
+      "original_id": 70,
+      "color": "#4a4a4a",
+      "prompts": [
+        "a railway freight car",
+        "a railroad car on tracks",
+        "a metal freight wagon"]
+    }
+  ]
+}
