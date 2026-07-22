@@ -139,3 +139,5 @@ python merge_datasets.py --datasets dataset_batch1/ dataset_batch2/ --output-dir
 class_id между партиями) — пересоздайте датасеты через `convert_to_yolo_seg.py` с актуальным
 `classes.json`, если список менялся.
 
+
+streamlit run main.py --server.address 0.0.0.0 --server.port 8501
