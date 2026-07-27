@@ -222,13 +222,14 @@ PAGE_UPLOAD = "Загрузка"
 PAGE_EXTRACT = "Извлечение кадров"
 PAGE_PIPELINE = "Пайплайн"
 PAGE_REVIEW = "Review"
+PAGE_SPOTCHECK = "Spot Check"
 PAGE_CONVERT = "Конвертация"
 PAGE_MERGE = "Объединение датасетов"
 
 st.sidebar.title("Auto-Labeling")
 page = st.sidebar.radio(
     "Навигация",
-    [PAGE_HOME, PAGE_UPLOAD, PAGE_EXTRACT, PAGE_PIPELINE, PAGE_REVIEW, PAGE_CONVERT, PAGE_MERGE],
+    [PAGE_HOME, PAGE_UPLOAD, PAGE_EXTRACT, PAGE_PIPELINE, PAGE_REVIEW, PAGE_SPOTCHECK, PAGE_CONVERT, PAGE_MERGE],
     index=0,
 )
 
@@ -424,7 +425,7 @@ elif page == PAGE_PIPELINE:
                     st.error(f"❌ Ошибка: {status.get('message')}")
 
 elif page == PAGE_REVIEW:
-    st.title(" Ручная проверка детекций")
+    st.title("🔍 Ручная проверка детекций")
  
     projects = get_projects()
     if not projects:
@@ -448,11 +449,11 @@ elif page == PAGE_REVIEW:
         st.sidebar.info("Нет данных для отображения")
     
     # Счетчики
-    st.sidebar.metric(" В review", stats["review_count"])
+    st.sidebar.metric("📋 В review", stats["review_count"])
     st.sidebar.metric("✅ В clean", stats["clean_count"])
     st.sidebar.markdown("---")
     st.sidebar.metric("✅ Принято детекций", stats["accepted"])
-    st.sidebar.metric("️ На проверке", stats["needs_review"])
+    st.sidebar.metric("⚠️ На проверке", stats["needs_review"])
     st.sidebar.metric("❌ Отклонено", stats["rejected"])
     
     json_files = get_review_files(selected_project)
@@ -479,12 +480,14 @@ elif page == PAGE_REVIEW:
     # Найти картинку
     image_path = find_image(stem, selected_project)
  
-    # Две колонки
-    col_img, col_det = st.columns([2, 1])
+    # Две колонки — изображение уже, панель детекций шире
+    col_img, col_det = st.columns([1.5, 1])
  
     with col_img:
         if image_path:
+            # Ограничиваем высоту изображения
             st.image(str(image_path), width="stretch")
+            st.caption(f"📷 {stem}")
         else:
             st.error("❌ Картинка не найдена!")
  
@@ -506,10 +509,11 @@ elif page == PAGE_REVIEW:
             Path(mask_path).unlink()
         _write_annotations()
  
-    DETECTIONS_PANEL_HEIGHT = 650
+    # УМЕНЬШЕНА ВЫСОТА ПАНЕЛИ с 650 до 400
+    DETECTIONS_PANEL_HEIGHT = 400
  
     with col_det:
-        st.subheader("📋 Детекции")
+        st.subheader(" Детекции")
  
         with st.container(height=DETECTIONS_PANEL_HEIGHT, border=True):
             for idx, det in enumerate(detections):
@@ -520,28 +524,26 @@ elif page == PAGE_REVIEW:
  
                 if bucket == "accepted":
                     emoji = "✅"
-                    color = "green"
                     conf_color = "green"
                 elif bucket == "needs_review":
                     emoji = "⚠️"
-                    color = "orange"
                     conf_color = "orange"
                 else:
-                    emoji = "❌"
-                    color = "red"
+                    emoji = ""
                     conf_color = "red"
  
                 cls_color = CLASS_COLORS.get(cls, "#808080")
  
+                # Компактный layout: 3 колонки
                 info_col, accept_col, reject_col = st.columns([4, 1, 1])
  
                 with info_col:
                     st.markdown(f"**{emoji} [{idx}] {cls}**")
-                    st.markdown(f":{conf_color}[Confidence: {conf:.2f}]")
+                    st.markdown(f":{conf_color}[{conf:.2f}]")
                     if reason:
-                        st.caption(f" {reason}")
+                        st.caption(f"📝 {reason[:40]}{'...' if len(reason) > 40 else ''}")
                     st.markdown(
-                        f"<div style='width:30px;height:30px;background:{cls_color};border:2px solid #333;border-radius:4px;display:inline-block'></div>",
+                        f"<div style='width:24px;height:24px;background:{cls_color};border:2px solid #333;border-radius:3px;display:inline-block;margin:2px 0'></div>",
                         unsafe_allow_html=True,
                     )
  
@@ -549,7 +551,7 @@ elif page == PAGE_REVIEW:
                     st.button(
                         "✅",
                         key=f"accept_{stem}_{idx}",
-                        help="Принять эту детекцию",
+                        help="Принять",
                         disabled=bucket == "accepted",
                         on_click=_accept,
                         args=(idx,),
@@ -559,7 +561,7 @@ elif page == PAGE_REVIEW:
                     st.button(
                         "❌",
                         key=f"reject_{stem}_{idx}",
-                        help="Отклонить эту детекцию",
+                        help="Отклонить",
                         disabled=bucket == "rejected",
                         on_click=_reject,
                         args=(idx,),
@@ -567,34 +569,187 @@ elif page == PAGE_REVIEW:
  
                 st.divider()
  
+        # Статистика компактно
         accepted = sum(1 for d in detections if d.get("qc_bucket") == "accepted")
         review = sum(1 for d in detections if d.get("qc_bucket") == "needs_review")
         rejected = sum(1 for d in detections if d.get("qc_bucket") == "rejected")
  
-        st.markdown(f"**Итого на картинке:** ✅ {accepted} | ⚠️ {review} | ❌ {rejected}")
+        st.markdown(f"**Итого:** ✅ {accepted} | ⚠️ {review} | ❌ {rejected}")
  
-    # Кнопки навигации
+    # Кнопки навигации — компактно
     st.markdown("---")
-    st.caption(f"📍 Картинка {st.session_state.review_index + 1} из {len(json_files)} в review")
+    col_nav1, col_nav2, col_nav3, col_nav4 = st.columns([1, 1, 1, 2])
     
-    col1, col2, col3 = st.columns([1, 1, 1])
- 
-    with col1:
-        if st.button("️ Назад", disabled=st.session_state.review_index == 0):
+    with col_nav1:
+        st.caption(f" {st.session_state.review_index + 1}/{len(json_files)}")
+    
+    with col_nav2:
+        if st.button("⬅️ Назад", disabled=st.session_state.review_index == 0, use_container_width=True):
             st.session_state.review_index -= 1
             st.rerun()
  
-    with col2:
-        if st.button("️ Вперёд", disabled=st.session_state.review_index == len(json_files) - 1):
+    with col_nav3:
+        if st.button("Вперёд ➡️", disabled=st.session_state.review_index == len(json_files) - 1, use_container_width=True):
             st.session_state.review_index += 1
             st.rerun()
  
-    with col3:
+    with col_nav4:
         has_review = any(d.get("qc_bucket") == "needs_review" for d in detections)
-        if st.button("📦 Перенести в clean", disabled=has_review):
+        if st.button("✅ В clean", disabled=has_review, use_container_width=True):
             move_to_clean(stem, selected_project)
             st.success(f"✅ {stem} перенесен в clean/")
             st.rerun()
+
+elif page == PAGE_SPOTCHECK:
+    st.title("🎲 Spot Check — быстрая проверка")
+    
+    st.markdown("""
+    **Spot Check** — режим для быстрой проверки случайных кадров из review.
+    Идеально подходит для первичной оценки качества детекций.
+    """)
+    
+    projects = get_projects()
+    if not projects:
+        st.warning("⚠️ Нет проектов.")
+        st.stop()
+    
+    selected_project = st.selectbox("Выберите проект", projects)
+    project_dir = PROJECTS_DIR / selected_project
+    
+    json_files = get_review_files(selected_project)
+    
+    if not json_files:
+        st.success(" Все детекции проверены! Нечего проверять.")
+        st.stop()
+    
+    # Кнопка случайного выбора
+    col1, col2, col3 = st.columns([1, 2, 1])
+    
+    with col2:
+        if st.button("🎲 Случайный кадр", use_container_width=True, type="primary"):
+            import random
+            st.session_state.spotcheck_file = random.choice(json_files)
+            st.session_state.spotcheck_active = True
+    
+    # Если есть выбранный файл для spot check
+    if "spotcheck_active" in st.session_state and st.session_state.spotcheck_active:
+        current_file = st.session_state.spotcheck_file
+        stem = current_file.stem
+        
+        # Загрузить данные
+        with open(current_file, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        detections = data.get("detections", [])
+        
+        # Найти картинку
+        image_path = find_image(stem, selected_project)
+        
+        # Компактный layout
+        col_img, col_det = st.columns([1.5, 1])
+        
+        with col_img:
+            if image_path:
+                st.image(str(image_path), width="stretch")
+                st.caption(f"📷 {stem}")
+            else:
+                st.error("❌ Картинка не найдена!")
+        
+        def _write_spotcheck_annotations():
+            with open(current_file, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=2, ensure_ascii=False)
+        
+        def _accept_spotcheck(det_idx: int):
+            detections[det_idx]["qc_bucket"] = "accepted"
+            detections[det_idx]["qc_reason"] = "принята в spot check"
+            _write_spotcheck_annotations()
+            st.rerun()
+        
+        def _reject_spotcheck(det_idx: int):
+            det = detections[det_idx]
+            det["qc_bucket"] = "rejected"
+            det["qc_reason"] = "отклонена в spot check"
+            mask_path = det.get("mask_path")
+            if mask_path and Path(mask_path).exists():
+                Path(mask_path).unlink()
+            _write_spotcheck_annotations()
+            st.rerun()
+        
+        DETECTIONS_PANEL_HEIGHT = 400
+        
+        with col_det:
+            st.subheader(" Детекции")
+            
+            with st.container(height=DETECTIONS_PANEL_HEIGHT, border=True):
+                for idx, det in enumerate(detections):
+                    bucket = det.get("qc_bucket", "accepted")
+                    cls = det["class"]
+                    conf = det.get("confidence", 0)
+                    
+                    if bucket == "accepted":
+                        emoji = "✅"
+                        conf_color = "green"
+                    elif bucket == "needs_review":
+                        emoji = "⚠️"
+                        conf_color = "orange"
+                    else:
+                        emoji = ""
+                        conf_color = "red"
+                    
+                    cls_color = CLASS_COLORS.get(cls, "#808080")
+                    
+                    info_col, accept_col, reject_col = st.columns([4, 1, 1])
+                    
+                    with info_col:
+                        st.markdown(f"**{emoji} [{idx}] {cls}**")
+                        st.markdown(f":{conf_color}[{conf:.2f}]")
+                        st.markdown(
+                            f"<div style='width:24px;height:24px;background:{cls_color};border:2px solid #333;border-radius:3px;display:inline-block;margin:2px 0'></div>",
+                            unsafe_allow_html=True,
+                        )
+                    
+                    with accept_col:
+                        st.button("✅", key=f"spot_accept_{stem}_{idx}", 
+                                 disabled=bucket == "accepted",
+                                 on_click=_accept_spotcheck, args=(idx,))
+                    
+                    with reject_col:
+                        st.button("❌", key=f"spot_reject_{stem}_{idx}",
+                                 disabled=bucket == "rejected",
+                                 on_click=_reject_spotcheck, args=(idx,))
+                    
+                    st.divider()
+            
+            # Кнопки действий
+            st.markdown("---")
+            col_btn1, col_btn2 = st.columns(2)
+            
+            with col_btn1:
+                if st.button("🎲 Ещё случайный", use_container_width=True):
+                    import random
+                    st.session_state.spotcheck_file = random.choice(json_files)
+                    st.rerun()
+            
+            with col_btn2:
+                if st.button("🔍 В полный review", use_container_width=True):
+                    # Находим индекс текущего файла в списке
+                    try:
+                        idx = json_files.index(current_file)
+                        st.session_state.review_index = idx
+                    except ValueError:
+                        st.session_state.review_index = 0
+                    st.session_state.spotcheck_active = False
+                    st.rerun()
+        
+        # Статистика
+        accepted = sum(1 for d in detections if d.get("qc_bucket") == "accepted")
+        review = sum(1 for d in detections if d.get("qc_bucket") == "needs_review")
+        rejected = sum(1 for d in detections if d.get("qc_bucket") == "rejected")
+        
+        st.markdown(f"**Детекций:** ✅ {accepted} | ⚠️ {review} | ❌ {rejected}")
+    
+    else:
+        st.info("👆 Нажмите **'🎲 Случайный кадр'**, чтобы начать проверку")
+        st.markdown(f"**Всего кадров в review:** {len(json_files)}")
 
 elif page == PAGE_CONVERT:
     st.title("📦 Конвертация в YOLO формат")
