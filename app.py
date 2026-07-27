@@ -58,7 +58,7 @@ def start_backend() -> bool:
 
 start_backend()
 
-# ── Вспомогательные функции ──────────────────────────────────────────────────
+# ── Вспомогательные функции ─────────────────────────────────────────────────
 def api_post(endpoint: str, data: dict) -> dict:
     """Отправить POST запрос к API."""
     try:
@@ -97,6 +97,7 @@ def get_review_files(project: str) -> list[Path]:
     if review_dir.exists():
         return sorted([f for f in review_dir.glob("*.json") if not f.name.startswith("_")])
     return []
+
 def get_project_stats(project: str) -> dict:
     """Подсчитывает статистику по проекту: сколько в review, clean, и детекций по статусам."""
     project_dir = PROJECTS_DIR / project
@@ -231,7 +232,7 @@ page = st.sidebar.radio(
     index=0,
 )
 
-# ── Страницы ─────────────────────────────────────────────────────────────────
+# ── Страницы ────────────────────────────────────────────────────────────────
 
 if page == PAGE_HOME:
     st.title("Добро пожаловать в Auto-Labeling!")
@@ -251,15 +252,15 @@ if page == PAGE_HOME:
     projects = get_projects()
 
     if projects:
-        st.success(f" Найдено проектов: {len(projects)}")
+        st.success(f"✅ Найдено проектов: {len(projects)}")
         for proj in projects:
             st.markdown(f"- **{proj}**")
     else:
-        st.warning(" Нет проектов. Создайте новый, загрузив видео!")
+        st.warning("⚠️ Нет проектов. Создайте новый, загрузив видео!")
     st.caption(" Убедитесь, что FastAPI сервер запущен: `python server.py`")
 
 elif page == PAGE_UPLOAD:
-    st.title("Загрузка видео или изображений")
+    st.title(" Загрузка видео или изображений")
 
     source_type = st.radio("Источник данных", ["Видео", "Готовые изображения"])
 
@@ -270,9 +271,9 @@ elif page == PAGE_UPLOAD:
         uploaded_file = st.file_uploader("Загрузите видео", type=["mp4", "avi", "mov"])
 
         if uploaded_file:
-            st.info(f"Загружен файл: {uploaded_file.name}")
+            st.info(f" Загружен файл: {uploaded_file.name}")
 
-            if st.button("Сохранить видео"):
+            if st.button("💾 Сохранить видео"):
                 if not project_dir.exists():
                     project_dir.mkdir(parents=True)
                     (project_dir / "frames").mkdir()
@@ -281,7 +282,7 @@ elif page == PAGE_UPLOAD:
                 with open(video_path, "wb") as f:
                     f.write(uploaded_file.getbuffer())
 
-                st.success(f"Видео сохранено в {video_path}")
+                st.success(f"✅ Видео сохранено в {video_path}")
                 st.video(str(video_path))
 
     else:  # Готовые изображения
@@ -292,9 +293,9 @@ elif page == PAGE_UPLOAD:
         )
 
         if uploaded_files:
-            st.info(f" Загружено файлов: {len(uploaded_files)}")
+            st.info(f"📷 Загружено файлов: {len(uploaded_files)}")
 
-            if st.button(" Сохранить изображения"):
+            if st.button("💾 Сохранить изображения"):
                 if not project_dir.exists():
                     project_dir.mkdir(parents=True)
                     (project_dir / "images").mkdir()
@@ -304,16 +305,16 @@ elif page == PAGE_UPLOAD:
                     with open(images_dir / file.name, "wb") as f:
                         f.write(file.getbuffer())
 
-                st.success(f"Загружено {len(uploaded_files)} изображений в {images_dir}")
+                st.success(f"✅ Загружено {len(uploaded_files)} изображений в {images_dir}")
 
                 st.image(str(images_dir / uploaded_files[0].name), caption="Пример изображения")
 
 elif page == PAGE_EXTRACT:
-    st.title(" Извлечение кадров из видео")
+    st.title("🎬 Извлечение кадров из видео")
 
     projects = get_projects()
     if not projects:
-        st.warning(" Нет проектов. Создайте проект на вкладке 'Загрузка'.")
+        st.warning("️ Нет проектов. Создайте проект на вкладке 'Загрузка'.")
         st.stop()
 
     selected_project = st.selectbox("Выберите проект", projects)
@@ -321,12 +322,12 @@ elif page == PAGE_EXTRACT:
 
     video_path = project_dir / "video.mp4"
     if not video_path.exists():
-        st.error(f" Видео не найдено в {video_path}")
+        st.error(f"❌ Видео не найдено в {video_path}")
         st.stop()
 
     fps = st.slider("Кадров в секунду", 1, 30, 5)
 
-    if st.button(" Извлечь кадры", use_container_width=True):
+    if st.button("🎬 Извлечь кадры", width="stretch"):
         with st.spinner("Извлечение кадров..."):
             result = api_post("/extract-frames", {"project": selected_project, "fps": fps})
 
@@ -347,16 +348,16 @@ elif page == PAGE_EXTRACT:
                     time.sleep(2)
 
                 if status.get("status") == "done":
-                    st.success(" Кадры успешно извлечены!")
+                    st.success("✅ Кадры успешно извлечены!")
                 else:
-                    st.error(f" Ошибка: {status.get('message')}")
+                    st.error(f"❌ Ошибка: {status.get('message')}")
 
 elif page == PAGE_PIPELINE:
-    st.title(" Запуск пайплайна детекции")
+    st.title("⚙️ Запуск пайплайна детекции")
 
     projects = get_projects()
     if not projects:
-        st.warning(" Нет проектов.")
+        st.warning("⚠️ Нет проектов.")
         st.stop()
 
     selected_project = st.selectbox("Выберите проект", projects)
@@ -364,7 +365,7 @@ elif page == PAGE_PIPELINE:
 
     frames_dir = project_dir / "frames"
     if not frames_dir.exists() or not list(frames_dir.glob("*.jpg")):
-        st.error(f"Кадры не найдены в {frames_dir}")
+        st.error(f" Кадры не найдены в {frames_dir}")
         st.stop()
 
     # Загрузить классы
@@ -397,7 +398,7 @@ elif page == PAGE_PIPELINE:
         else:
             st.success(f"Выбраны все {len(class_names)} классов")
 
-    if st.button(" Запустить пайплайн", use_container_width=True, disabled=not selected_classes):
+    if st.button("⚙️ Запустить пайплайн", width="stretch", disabled=not selected_classes):
         with st.spinner("Запуск пайплайна..."):
             result = api_post("/run-pipeline", {"project": selected_project, "classes": selected_classes})
 
@@ -418,12 +419,12 @@ elif page == PAGE_PIPELINE:
                     time.sleep(2)
 
                 if status.get("status") == "done":
-                    st.success("Пайплайн завершен!")
+                    st.success("✅ Пайплайн завершен!")
                 else:
-                    st.error(f"Ошибка: {status.get('message')}")
+                    st.error(f"❌ Ошибка: {status.get('message')}")
 
 elif page == PAGE_REVIEW:
-    st.title("🔍 Ручная проверка детекций")
+    st.title(" Ручная проверка детекций")
  
     projects = get_projects()
     if not projects:
@@ -432,11 +433,12 @@ elif page == PAGE_REVIEW:
  
     selected_project = st.selectbox("Выберите проект", projects)
     project_dir = PROJECTS_DIR / selected_project
-        # Статистика по проекту
+    
+    # Статистика по проекту
     stats = get_project_stats(selected_project)
     
     st.sidebar.markdown("---")
-    st.sidebar.subheader(" Статистика проекта")
+    st.sidebar.subheader("📊 Статистика проекта")
     
     # Прогресс-бар
     if stats["total_images"] > 0:
@@ -450,12 +452,13 @@ elif page == PAGE_REVIEW:
     st.sidebar.metric("✅ В clean", stats["clean_count"])
     st.sidebar.markdown("---")
     st.sidebar.metric("✅ Принято детекций", stats["accepted"])
-    st.sidebar.metric("⚠️ На проверке", stats["needs_review"])
+    st.sidebar.metric("️ На проверке", stats["needs_review"])
     st.sidebar.metric("❌ Отклонено", stats["rejected"])
+    
     json_files = get_review_files(selected_project)
  
     if not json_files:
-        st.success("Все детекции проверены!")
+        st.success("🎉 Все детекции проверены!")
         st.stop()
  
     # Навигация
@@ -481,7 +484,7 @@ elif page == PAGE_REVIEW:
  
     with col_img:
         if image_path:
-            st.image(str(image_path), use_container_width=True)
+            st.image(str(image_path), width="stretch")
         else:
             st.error("❌ Картинка не найдена!")
  
@@ -490,13 +493,13 @@ elif page == PAGE_REVIEW:
             json.dump(data, f, indent=2, ensure_ascii=False)
  
     def _accept(det_idx: int):
-        detections[det_idx]["qc_bucket"] = "принята"
-        detections[det_idx]["qc_reason"] ="принята ручной проверкой"
+        detections[det_idx]["qc_bucket"] = "accepted"
+        detections[det_idx]["qc_reason"] = "принята ручной проверкой"
         _write_annotations()
  
     def _reject(det_idx: int):
         det = detections[det_idx]
-        det["qc_bucket"] = "отклонена"
+        det["qc_bucket"] = "rejected"
         det["qc_reason"] = "отклонена ручной проверкой"
         mask_path = det.get("mask_path")
         if mask_path and Path(mask_path).exists():
@@ -506,7 +509,7 @@ elif page == PAGE_REVIEW:
     DETECTIONS_PANEL_HEIGHT = 650
  
     with col_det:
-        st.subheader(" Детекции")
+        st.subheader("📋 Детекции")
  
         with st.container(height=DETECTIONS_PANEL_HEIGHT, border=True):
             for idx, det in enumerate(detections):
@@ -518,24 +521,27 @@ elif page == PAGE_REVIEW:
                 if bucket == "accepted":
                     emoji = "✅"
                     color = "green"
+                    conf_color = "green"
                 elif bucket == "needs_review":
                     emoji = "⚠️"
                     color = "orange"
+                    conf_color = "orange"
                 else:
                     emoji = "❌"
                     color = "red"
+                    conf_color = "red"
  
                 cls_color = CLASS_COLORS.get(cls, "#808080")
  
-                info_col, accept_col, reject_col = st.columns([3, 1, 1])
+                info_col, accept_col, reject_col = st.columns([4, 1, 1])
  
                 with info_col:
                     st.markdown(f"**{emoji} [{idx}] {cls}**")
-                    st.markdown(f":{color}[Confidence: {conf:.2f}]")
+                    st.markdown(f":{conf_color}[Confidence: {conf:.2f}]")
                     if reason:
                         st.caption(f" {reason}")
                     st.markdown(
-                        f"<div style='width:20px;height:20px;background:{cls_color};border:1px solid #333'></div>",
+                        f"<div style='width:30px;height:30px;background:{cls_color};border:2px solid #333;border-radius:4px;display:inline-block'></div>",
                         unsafe_allow_html=True,
                     )
  
@@ -565,7 +571,7 @@ elif page == PAGE_REVIEW:
         review = sum(1 for d in detections if d.get("qc_bucket") == "needs_review")
         rejected = sum(1 for d in detections if d.get("qc_bucket") == "rejected")
  
-        st.markdown(f"**Итого:** ✅ {accepted} | ⚠️ {review} | ❌ {rejected}")
+        st.markdown(f"**Итого на картинке:** ✅ {accepted} | ⚠️ {review} | ❌ {rejected}")
  
     # Кнопки навигации
     st.markdown("---")
@@ -574,30 +580,28 @@ elif page == PAGE_REVIEW:
     col1, col2, col3 = st.columns([1, 1, 1])
  
     with col1:
-        if st.button("⬅️ Назад", disabled=st.session_state.review_index == 0):
+        if st.button("️ Назад", disabled=st.session_state.review_index == 0):
             st.session_state.review_index -= 1
             st.rerun()
  
     with col2:
-        if st.button("➡️ Вперёд", disabled=st.session_state.review_index == len(json_files) - 1):
+        if st.button("️ Вперёд", disabled=st.session_state.review_index == len(json_files) - 1):
             st.session_state.review_index += 1
             st.rerun()
  
     with col3:
         has_review = any(d.get("qc_bucket") == "needs_review" for d in detections)
-        if st.button("Перенести в clean", disabled=has_review):
+        if st.button("📦 Перенести в clean", disabled=has_review):
             move_to_clean(stem, selected_project)
-            st.success(f" {stem} перенесен в clean/")
+            st.success(f"✅ {stem} перенесен в clean/")
             st.rerun()
 
-
-
 elif page == PAGE_CONVERT:
-    st.title("Конвертация в YOLO формат")
+    st.title("📦 Конвертация в YOLO формат")
 
     projects = get_projects()
     if not projects:
-        st.warning("Нет проектов.")
+        st.warning("⚠️ Нет проектов.")
         st.stop()
 
     selected_project = st.selectbox("Выберите проект", projects)
@@ -605,10 +609,10 @@ elif page == PAGE_CONVERT:
 
     clean_dir = project_dir / "ann" / "clean"
     if not clean_dir.exists() or not list(clean_dir.glob("*.json")):
-        st.warning("Нет данных для конвертации. Проверьте все детекции в Review.")
+        st.warning("⚠️ Нет данных для конвертации. Проверьте все детекции в Review.")
         st.stop()
 
-    if st.button("Конвертировать в YOLO", use_container_width=True):
+    if st.button("📦 Конвертировать в YOLO", width="stretch"):
         with st.spinner("Конвертация..."):
             result = api_post("/convert-to-yolo", {"project": selected_project})
 
@@ -629,7 +633,7 @@ elif page == PAGE_CONVERT:
                     time.sleep(2)
 
                 if status.get("status") == "done":
-                    st.success("Конвертация завершена!")
+                    st.success("✅ Конвертация завершена!")
 
                     # Скачать датасет
                     dataset_dir = project_dir / "dataset_yolo"
@@ -639,16 +643,16 @@ elif page == PAGE_CONVERT:
 
                         with open(zip_path, "rb") as f:
                             st.download_button(
-                                " Скачать датасет",
+                                "📥 Скачать датасет",
                                 data=f.read(),
                                 file_name=f"{selected_project}_dataset.zip",
                                 mime="application/zip"
                             )
                 else:
-                    st.error(f"Ошибка: {status.get('message')}")
+                    st.error(f"❌ Ошибка: {status.get('message')}")
 
 elif page == PAGE_MERGE:
-    st.title(" Объединение YOLO-датасетов")
+    st.title("📦 Объединение YOLO-датасетов")
     
     st.markdown("""
     Выберите несколько проектов, у которых уже выполнена конвертация в YOLO, 
@@ -657,7 +661,7 @@ elif page == PAGE_MERGE:
     
     projects = get_projects()
     if not projects:
-        st.warning(" Нет проектов.")
+        st.warning("⚠️ Нет проектов.")
         st.stop()
     
     # Фильтруем только те проекты, где уже есть dataset_yolo
@@ -668,7 +672,7 @@ elif page == PAGE_MERGE:
             projects_with_dataset.append(proj)
     
     if len(projects_with_dataset) < 2:
-        st.warning(" Для объединения нужно как минимум **2** проекта с готовым YOLO-датасетом. Сначала завершите конвертацию в соответствующих проектах.")
+        st.warning("⚠️ Для объединения нужно как минимум **2** проекта с готовым YOLO-датасетом. Сначала завершите конвертацию в соответствующих проектах.")
         st.stop()
     
     st.subheader("1. Выберите исходные проекты")
@@ -686,15 +690,15 @@ elif page == PAGE_MERGE:
         st.error(f" Проект с именем '{new_project_name}' уже существует! Выберите другое имя.")
         can_merge = False
     elif not new_project_name.strip():
-        st.error(" Имя проекта не может быть пустым.")
+        st.error("❌ Имя проекта не может быть пустым.")
         can_merge = False
     elif len(selected_projects) < 2:
-        st.warning(" Выберите минимум 2 проекта для объединения.")
+        st.warning("⚠️ Выберите минимум 2 проекта для объединения.")
         can_merge = False
     else:
         can_merge = True
     
-    if st.button(" Объединить датасеты", use_container_width=True, disabled=not can_merge):
+    if st.button("🚀 Объединить датасеты", width="stretch", disabled=not can_merge):
         with st.spinner("Объединение датасетов... Это может занять некоторое время."):
             try:
                 new_dataset_dir = new_project_dir / "dataset_yolo"
@@ -756,12 +760,12 @@ elif page == PAGE_MERGE:
                 with open(new_dataset_dir / "data.yaml", "w", encoding="utf-8") as f:
                     yaml.dump(data_yaml, f, allow_unicode=True, sort_keys=False)
                 
-                st.success(f" Датасеты успешно объединены в проект: **{new_project_name}**!")
+                st.success(f"✅ Датасеты успешно объединены в проект: **{new_project_name}**!")
                 st.markdown(f"""
                 **Статистика объединения:**
-                -  Изображений скопировано: **{total_images}**
-                -  Файлов аннотаций скопировано: **{total_labels}**
-                -  Путь к новому датасету: `{new_dataset_dir}`
+                - 🖼️ Изображений скопировано: **{total_images}**
+                - 🏷️ Файлов аннотаций скопировано: **{total_labels}**
+                - 📁 Путь к новому датасету: `{new_dataset_dir}`
                 """)
                 
                 # Предлагаем скачать объединенный датасет
@@ -771,11 +775,12 @@ elif page == PAGE_MERGE:
                 
                 with open(zip_path, "rb") as f:
                     st.download_button(
-                        " Скачать объединенный YOLO-датасет",
+                        "📥 Скачать объединенный YOLO-датасет",
                         data=f.read(),
                         file_name=f"{new_project_name}_merged.zip",
                         mime="application/zip"
                     )
                 
             except Exception as e:
-                st.error(f" Произошла ошибка при объединении: {str(e)}")
+                st.error(f"❌ Произошла ошибка при объединении: {str(e)}")
+
