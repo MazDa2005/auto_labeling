@@ -68,6 +68,8 @@ if __name__ == "__main__":
     parser.add_argument("--boxes-dir", required=True, help="Папка с JSON detections от предыдущего этапа")
     parser.add_argument("--model", default="sam3.pt")
     parser.add_argument("--masks-root", default="masks")
+    parser.add_argument("--classes-file", default="classes.json",
+                     help="Не используется в самом refine, но передаётся оркестратором для единообразия CLI")
     parser.add_argument("--out-dir", required=True)
     args = parser.parse_args()
 

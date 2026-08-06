@@ -12,7 +12,7 @@
       "name": "welding",
       "original_id": 57,
       "color": "#8e1e47",
-      "prompts": ["welding"]
+      "prompts": ["welding", "sparks", "welding sparks"]
     },
     {
       "index": 2,
@@ -47,7 +47,7 @@
       "name": "orange_vest",
       "original_id": 64,
       "color": "#512ef8",
-      "prompts": ["vest"]
+      "prompts": ["vest","safety vest"]
     },
     {
       "index": 7,
@@ -86,6 +86,21 @@
         "a railway freight car",
         "a railroad car on tracks",
         "a metal freight wagon"]
+    },
+    {
+      "index": 12,
+      "name": "smoke",
+      "original_id": 71,
+      "color": "##00fa9a",
+      "prompts": ["smoke"]
+    },
+    {
+      "index": 13,
+      "name": "fire",
+      "original_id": 72,
+      "color": "#00ffff",
+      "prompts": ["fire"]
     }
   ]
 }
+

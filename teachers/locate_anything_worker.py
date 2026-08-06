@@ -113,7 +113,7 @@ class LocateAnythingWorker:
         for match in re.finditer(pattern, answer, re.DOTALL):
             class_name = match.group(1).strip()
             box_str = match.group(2).strip()
-            >
+            
             if box_str.lower() == 'none' or not box_str:
                 continue
             

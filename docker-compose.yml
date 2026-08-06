@@ -1,0 +1,26 @@
+services:
+  auto-labeling:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    shm_size: '8gb'
+    image: auto-labeling:latest
+    container_name: auto-labeling
+    restart: unless-stopped
+    ports:
+      - "8501:8501"
+    gpus: all
+    volumes:
+      - /home/iet/iet-share/models:/home/iet/iet-share/models:ro
+      - /home/iet/iet-share/sam3:/home/iet/iet-share/sam3:ro
+      - /home/iet/iet-share/LocateAnything-3B:/home/iet/iet-share/LocateAnything-3B:ro
+      - ./projects:/app/projects
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8501/_stcore/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s

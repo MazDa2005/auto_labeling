@@ -1,13 +1,13 @@
 """
-QC filter — intermediate step between batch_label.py and convert_to_yolo_seg.py.
+QC-фильтр — промежуточный этап между batch_label.py и convert_to_yolo_seg.py.
 
-Splits IMAGES into two groups:
-  - clean/   -> all detections accepted/rejected
-  - review/  -> at least one needs_review
+Разбивает ИЗОБРАЖЕНИЯ на две группы:
+  - clean/   -> все обнаружения приняты/отклонены
+  - review/  -> хотя бы одно требует проверки
 
-Each group has its own masks/ subfolder with COPIES of the masks.
+У каждой группы есть своя папка masks/ с КОПИЯМИ масок.
 
-Box colors:
+Цвета рамок:
   green  = accepted
   orange  = needs_review
   red  = rejected
@@ -85,16 +85,16 @@ def bbox_area(bbox: list[float]) -> float:
 def check_detection_level(det: dict, img_w: int, img_h: int) -> tuple[str, str] | None:
     conf = det.get("confidence")
     if conf is not None and conf < MIN_CONFIDENCE:
-        return ("rejected", f"low confidence ({conf:.2f} < {MIN_CONFIDENCE})")
+        return ("rejected", f"низкая уверенность ({conf:.2f} < {MIN_CONFIDENCE})")
 
     img_area = img_w * img_h
     rel_area = bbox_area(det["bbox"]) / img_area if img_area > 0 else 0
     if rel_area < MIN_BBOX_AREA_REL:
-        return ("rejected", f"degenerate bbox (rel.area={rel_area*100:.4f}%)")
+        return ("rejected", f"вырожденный bbox (отн.площадь={rel_area*100:.4f}%)")
 
     refine_iou = det.get("refine_iou")
     if refine_iou is not None and refine_iou < LOW_REFINE_IOU:
-        return ("needs_review", f"detect/refine diverged (IoU={refine_iou:.2f})")
+        return ("needs_review", f"расхождение detect/refine (IoU={refine_iou:.2f})")
 
     # CLIP-проверка (если есть)
     if det.get("clip_agrees") is False:
@@ -103,7 +103,7 @@ def check_detection_level(det: dict, img_w: int, img_h: int) -> tuple[str, str] 
         own_score = det.get("clip_own_class_score") or 0.0
         if clip_score >= 0.25 and (clip_score - own_score) > 0.15:
             return ("needs_review",
-                    f"CLIP disagrees: '{clip_class}' ({clip_score:.2f}) vs '{det['class']}' ({own_score:.2f})")
+                    f"CLIP не согласен: '{clip_class}' ({clip_score:.2f}) vs '{det['class']}' ({own_score:.2f})")
 
     return None
 
@@ -118,7 +118,7 @@ def check_pairwise_conflicts(detections: list[dict]) -> dict[int, tuple[str, str
             if d1["class"] == d2["class"] and box_iou > DUPLICATE_IOU:
                 c1, c2 = d1.get("confidence") or 0.0, d2.get("confidence") or 0.0
                 loser = i if c1 <= c2 else j
-                reason = f"duplicate '{d1['class']}' (IoU={box_iou:.2f})"
+                reason = f"дубликат '{d1['class']}' (IoU={box_iou:.2f})"
                 prev = flagged.get(loser)
                 if prev is None or _BUCKET_PRIORITY["rejected"] > _BUCKET_PRIORITY[prev[0]]:
                     flagged[loser] = ("rejected", reason)
@@ -127,9 +127,9 @@ def check_pairwise_conflicts(detections: list[dict]) -> dict[int, tuple[str, str
             if is_expected_overlap(d1["class"], d2["class"]): continue
 
             if is_exclusive_conflict(d1["class"], d2["class"]):
-                reason = f"conflict '{d1['class']}' vs '{d2['class']}' (IoU={box_iou:.2f})"
+                reason = f"конфликт '{d1['class']}' vs '{d2['class']}' (IoU={box_iou:.2f})"
             else:
-                reason = f"overlap '{d1['class']}'/'{d2['class']}' (IoU={box_iou:.2f})"
+                reason = f"перекрытие '{d1['class']}'/'{d2['class']}' (IoU={box_iou:.2f})"
 
             for idx in (i, j):
                 prev = flagged.get(idx)
@@ -145,7 +145,7 @@ def check_person_context(detections: list[dict]) -> dict[int, str]:
 
     for idx, det in enumerate(detections):
         if det["class"] == "person" and (det.get("confidence") or 0) >= PERSON_CONTEXT_CONF_THRESHOLD:
-            flagged[idx] = f"person without PPE on image (conf={det['confidence']:.2f})"
+            flagged[idx] = f"человек без СИЗ на кадре (conf={det['confidence']:.2f})"
     return flagged
 
 def classify_detections(detections: list[dict], img_w: int, img_h: int) -> list[dict]:
@@ -172,17 +172,47 @@ def classify_detections(detections: list[dict], img_w: int, img_h: int) -> list[
     return result
 
 
-def _copy_masks_for_image(detections: list[dict], image_stem: str, target_masks_dir: Path) -> list[dict]:
+def _resolve_existing_path(path_str: str | None, annotations_dir: str) -> Path | None:
+    if not path_str:
+        return None
+    candidates = [
+        Path(path_str),
+        Path(annotations_dir) / path_str,
+        Path.cwd() / path_str,
+    ]
+    for c in candidates:
+        if c.exists():
+            return c
+    return None
+
+
+def _copy_masks_for_image(detections: list[dict], image_stem: str, target_masks_dir: Path,
+                           annotations_dir: str) -> list[dict]:
     result = []
     for det in detections:
         det = dict(det)
         old_mask_path = det.get("mask_path")
-        if old_mask_path and Path(old_mask_path).exists():
-            old_name = Path(old_mask_path).name
-            new_name = f"{image_stem}_{old_name}"
+        resolved = _resolve_existing_path(old_mask_path, annotations_dir)
+
+        if resolved is not None:
+            new_name = f"{image_stem}_{resolved.name}"
             new_path = target_masks_dir / new_name
-            shutil.copy(old_mask_path, new_path)
+            shutil.copy(resolved, new_path)
             det["mask_path"] = str(new_path.resolve())
+        elif old_mask_path:
+            # Путь в JSON был, но файл не нашёлся ни одним из способов —
+            # раньше это проходило молча и маска просто не рисовалась.
+            print(
+                f"[qc][WARN] {image_stem}: mask_path='{old_mask_path}' указан для "
+                f"class='{det.get('class')}', но файл не найден (пробовал: as-is, "
+                f"relative to '{annotations_dir}', relative to cwd='{Path.cwd()}'). "
+                f"Маска НЕ будет нарисована и НЕ попадёт в датасет для этой детекции.",
+                file=sys.stderr,
+            )
+            det["mask_path"] = None
+        # если mask_path вообще не было в детекции — это ожидаемо (например,
+        # для классов, где refine-этап не применяется), молчим.
+
         result.append(det)
     return result
 
@@ -203,71 +233,57 @@ def load_class_colors(classes_file: str) -> dict[str, tuple[int, int, int]]:
 
 
 def draw_qc_annotated(image_path: str, detections: list[dict], out_path: str,
-                      class_colors: dict[str, tuple[int, int, int]] = None):
+                       class_colors: dict[str, tuple[int, int, int]] = None):
     """
     Рисует маски (цвет из classes.json) + боксы (цвет по статусу QC) + номера детекций.
     """
     if class_colors is None:
         class_colors = {}
     default_color = (150, 150, 150)
-
     img = Image.open(image_path).convert("RGB")
     overlay = Image.new("RGBA", img.size, (0, 0, 0, 0))
+
+    masks_drawn = 0
+    masks_missing = 0
 
     # ── 1. Полупрозрачные МАСКИ (цвет из classes.json) ──
     for det in detections:
         mask_path = det.get("mask_path")
-        if mask_path and Path(mask_path).exists():
-            cls = det["class"]
-            rgb = class_colors.get(cls, default_color)
-            mask_img = Image.open(mask_path).convert("L").resize(img.size)
-            mask_array = np.array(mask_img) > 127
-            colored = np.zeros((*mask_array.shape, 4), dtype=np.uint8)
-            colored[mask_array] = (*rgb, 70)  # альфа 70 — полупрозрачность
-            overlay = Image.alpha_composite(overlay, Image.fromarray(colored, mode="RGBA"))
+        if not mask_path:
+            continue
+        if not Path(mask_path).exists():
+            masks_missing += 1
+            continue
+        cls = det["class"]
+        rgb = class_colors.get(cls, default_color)
+        mask_img = Image.open(mask_path).convert("L").resize(img.size, resample=Image.NEAREST)
+        mask_np = np.array(mask_img)
+        threshold = 127 if mask_np.max() > 1 else 0
+        mask_array = mask_np > threshold
+        colored = np.zeros((*mask_array.shape, 4), dtype=np.uint8)
+        colored[mask_array] = (*rgb, 150)  # альфа 70 — полупрозрачность
+        overlay = Image.alpha_composite(overlay, Image.fromarray(colored, mode="RGBA"))
+        masks_drawn += 1
+
+    if masks_missing:
+        print(f"[qc][WARN] {Path(out_path).stem}: {masks_missing} mask_path указаны, "
+              f"но файлы уже отсутствуют на момент отрисовки", file=sys.stderr)
 
     img = Image.alpha_composite(img.convert("RGBA"), overlay).convert("RGB")
     draw = ImageDraw.Draw(img)
 
-    # ── 2. Боксы, номера и подписи ──
+    # ─ 2. Боксы, номера и подписи (цвет — по статусу QC: A / needs_review / rejected) ──
     for idx, det in enumerate(detections):
         bucket = det["qc_bucket"]
         cls = det["class"]
         x1, y1, x2, y2 = det["bbox"]
 
-        # Цвет рамки — по статусу QC
         outline_color = BUCKET_OUTLINE[bucket]
-        # Цвет подписи/фона — по классу (из classes.json)
-        class_color = class_colors.get(cls, default_color)
 
-        # Рамка
         width = 4 if bucket == "needs_review" else (2 if bucket == "accepted" else 1)
         draw.rectangle([x1, y1, x2, y2], outline=outline_color, width=width)
 
-        # Подпись: [номер] класс conf | причина
-        label = f"[{idx}] {cls}"
-        if det.get("confidence") is not None:
-            label += f" {det['confidence']:.2f}"
-        if bucket != "accepted" and det.get("qc_reason"):
-            reason = det["qc_reason"]
-            if len(reason) > 40:
-                reason = reason[:37] + "..."
-            label += f" | {reason}"
-
-        # Размер текста
-        try:
-            bbox = draw.textbbox((0, 0), label)
-            tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
-        except AttributeError:
-            tw, th = len(label) * 7, 12
-
-        # Фон подписи — затемнённый цвет класса
-        bg_color = tuple(max(0, c - 60) for c in class_color)
-        ty = max(0, y1 - th - 6)
-        draw.rectangle([x1, ty, x1 + tw + 6, ty + th + 4], fill=bg_color)
-        draw.text((x1 + 3, ty + 2), label, fill=(255, 255, 255))
-
-        # Номер в кружке
+        
         num_label = str(idx)
         try:
             nb = draw.textbbox((0, 0), num_label)
@@ -281,7 +297,7 @@ def draw_qc_annotated(image_path: str, detections: list[dict], out_path: str,
         draw.text((x1 + 5, y1 + 3), num_label, fill=(255, 255, 255))
 
     img.save(out_path)
-
+    return masks_drawn, masks_missing
 
 def get_image_size(data: dict) -> tuple[int, int]:
     w, h = data.get("width"), data.get("height")
@@ -294,8 +310,7 @@ def get_image_size(data: dict) -> tuple[int, int]:
 
 def process_annotations(annotations_dir: str, output_dir: str, 
                         classes_file: str = "classes.json",
-                        masks_root_to_delete: str = None):
-    # Загружаем цвета классов из classes.json
+                        masks_root_to_delete: str = None):    # Загружаем цвета классов из classes.json
     class_colors = load_class_colors(classes_file)
     print(f"[qc] загружено {len(class_colors)} цветов классов из {classes_file}")
     
@@ -305,12 +320,14 @@ def process_annotations(annotations_dir: str, output_dir: str,
 
     json_files = [p for p in Path(annotations_dir).glob("*.json") if not p.name.startswith("_")]
     if not json_files:
-        print(f"No JSON files found in {annotations_dir}", file=sys.stderr)
+        print(f"Не найдено JSON-файлов в {annotations_dir}", file=sys.stderr)
         sys.exit(1)
 
     totals = {"clean": 0, "review": 0, "skipped": 0}
     bucket_totals = {"accepted": 0, "needs_review": 0, "rejected": 0}
+    masks_expected = 0
     masks_copied = 0
+    masks_drawn_total = 0
     summary = []
 
     for json_path in json_files:
@@ -322,19 +339,11 @@ def process_annotations(annotations_dir: str, output_dir: str,
                 totals["skipped"] += 1
                 continue
 
-            image_file = Path(image_path)
-            if not image_file.exists():
-                alt_path = Path(annotations_dir) / image_path
-                if alt_path.exists():
-                    image_file = alt_path
-                else:
-                    alt_path = Path.cwd() / image_path
-                    if alt_path.exists():
-                        image_file = alt_path
-                    else:
-                        print(f"[WARN] {json_path.name}: image not found ({image_path})")
-                        totals["skipped"] += 1
-                        continue
+            image_file = _resolve_existing_path(image_path, annotations_dir)
+            if image_file is None:
+                print(f"[WARN] {json_path.name}: картинка не найдена ({image_path})")
+                totals["skipped"] += 1
+                continue
 
         try:
             img_w, img_h = get_image_size(data)
@@ -346,6 +355,7 @@ def process_annotations(annotations_dir: str, output_dir: str,
         detections = classify_detections(data.get("detections", []) or [], img_w, img_h)
         for det in detections:
             bucket_totals[det["qc_bucket"]] += 1
+        masks_expected += sum(1 for d in detections if d.get("mask_path"))
 
         has_review = any(d["qc_bucket"] in ("needs_review", "rejected") for d in detections)
         target = out / ("review" if has_review else "clean")
@@ -353,7 +363,8 @@ def process_annotations(annotations_dir: str, output_dir: str,
 
         target_masks_dir = target / "masks"
         target_masks_dir.mkdir(parents=True, exist_ok=True)
-        detections_with_masks = _copy_masks_for_image(detections, json_path.stem, target_masks_dir)
+        detections_with_masks = _copy_masks_for_image(detections, json_path.stem, target_masks_dir,
+                                                        annotations_dir)
         masks_copied += sum(1 for d in detections_with_masks if d.get("mask_path"))
 
         out_data = dict(data)
@@ -361,32 +372,47 @@ def process_annotations(annotations_dir: str, output_dir: str,
         with open(target / json_path.name, "w", encoding="utf-8") as f:
             json.dump(out_data, f, indent=2, ensure_ascii=False)
 
-        draw_qc_annotated(str(image_file), detections_with_masks, str(target / f"{json_path.stem}_annotated.jpg"),class_colors=class_colors)
+        drawn, missing = draw_qc_annotated(
+            str(image_file), detections_with_masks,
+            str(target / f"{json_path.stem}_annotated.jpg"),
+            class_colors=class_colors,
+        )
+        masks_drawn_total += drawn
+
         s = {
             "image": json_path.stem,
             "status": "review" if has_review else "clean",
             "accepted": sum(1 for d in detections if d["qc_bucket"] == "accepted"),
             "needs_review": sum(1 for d in detections if d["qc_bucket"] == "needs_review"),
             "rejected": sum(1 for d in detections if d["qc_bucket"] == "rejected"),
+            "masks_drawn": drawn,
         }
         summary.append(s)
         print(f"{json_path.stem}: {'REVIEW' if has_review else 'clean'} "
-              f"(a={s['accepted']}, r={s['needs_review']}, x={s['rejected']})")
+              f"(принято={s['accepted']}, на_проверке={s['needs_review']}, отклонено={s['rejected']}, масок={drawn})")
 
     with open(out / "_qc_summary.json", "w", encoding="utf-8") as f:
         json.dump({
             "images": totals,
             "detections": bucket_totals,
+            "masks_expected": masks_expected,
             "masks_copied": masks_copied,
+            "masks_drawn": masks_drawn_total,
             "per_image": summary,
         }, f, indent=2, ensure_ascii=False)
-    print(f"\nTotal: clean={totals['clean']}, review={totals['review']}, skipped={totals['skipped']}")
-    print(f"Masks copied: {masks_copied}")
+    print(f"\nИтого: clean={totals['clean']}, review={totals['review']}, пропущено={totals['skipped']}")
+    print(f"Маски: ожидалось={masks_expected}, скопировано={masks_copied}, отрисовано={masks_drawn_total}")
+    if masks_expected != masks_drawn_total:
+        print(f"[qc][WARN] {masks_expected - masks_drawn_total} масок из {masks_expected} НЕ отрисовано — "
+              f"смотри [qc][WARN] строки выше для конкретных путей.", file=sys.stderr)
 
     masks_root = Path(annotations_dir).parent / "masks"
     if masks_root.exists() and masks_root.is_dir():
         shutil.rmtree(masks_root)
-
+    if masks_root_to_delete:
+        masks_root = Path(masks_root_to_delete)
+        if masks_root.exists():
+            shutil.rmtree(masks_root) 
 if __name__ == "__main__":
     p = argparse.ArgumentParser()
     p.add_argument("--annotations-dir", required=True)

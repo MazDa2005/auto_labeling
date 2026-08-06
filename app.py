@@ -6,16 +6,18 @@ FastAPI бэкенд (server.py) поднимается автоматическ
 внутри этого же процесса
 """
 import json
+import random
 import shutil
 import socket
 import threading
 import time
 from pathlib import Path
-import yaml 
 
 import requests
 import streamlit as st
 import uvicorn
+import yaml
+import pandas as pd  # <-- ДОБАВЛЕНО для таблиц бенчмарка
 
 from server import app as fastapi_app
 
@@ -58,7 +60,7 @@ def start_backend() -> bool:
 
 start_backend()
 
-# ── Вспомогательные функции ─────────────────────────────────────────────────
+# ── Вспомогательные функции ────────────────────────────────────────────────
 def api_post(endpoint: str, data: dict) -> dict:
     """Отправить POST запрос к API."""
     try:
@@ -66,7 +68,7 @@ def api_post(endpoint: str, data: dict) -> dict:
         response.raise_for_status()
         return response.json()
     except requests.exceptions.ConnectionError:
-        st.error("❌ Не удалось подключиться к API серверу. Запустите: `python server.py`")
+        st.error(" Не удалось подключиться к API серверу. Запустите: `python server.py`")
         st.stop()
     except requests.exceptions.HTTPError as e:
         st.error(f"HTTP ошибка: {e}")
@@ -98,29 +100,28 @@ def get_review_files(project: str) -> list[Path]:
         return sorted([f for f in review_dir.glob("*.json") if not f.name.startswith("_")])
     return []
 
+
 def get_project_stats(project: str) -> dict:
     """Подсчитывает статистику по проекту: сколько в review, clean, и детекций по статусам."""
     project_dir = PROJECTS_DIR / project
-    
+
     review_dir = project_dir / "ann" / "review"
     clean_dir = project_dir / "ann" / "clean"
-    
+
     review_files = []
     if review_dir.exists():
         review_files = [f for f in review_dir.glob("*.json") if not f.name.startswith("_")]
-    
+
     clean_files = []
     if clean_dir.exists():
         clean_files = [f for f in clean_dir.glob("*.json") if not f.name.startswith("_")]
-    
+
     total_images = len(review_files) + len(clean_files)
-    
-    # Считаем детекции по статусам
+
     total_accepted = 0
     total_needs_review = 0
     total_rejected = 0
-    
-    # Из review/
+
     for json_file in review_files:
         with open(json_file, "r", encoding="utf-8") as f:
             data = json.load(f)
@@ -132,8 +133,7 @@ def get_project_stats(project: str) -> dict:
                 total_needs_review += 1
             elif bucket == "rejected":
                 total_rejected += 1
-    
-    # Из clean/ (там все accepted или rejected после проверки)
+
     for json_file in clean_files:
         with open(json_file, "r", encoding="utf-8") as f:
             data = json.load(f)
@@ -145,7 +145,7 @@ def get_project_stats(project: str) -> dict:
                 total_needs_review += 1
             elif bucket == "rejected":
                 total_rejected += 1
-    
+
     return {
         "review_count": len(review_files),
         "clean_count": len(clean_files),
@@ -155,27 +155,31 @@ def get_project_stats(project: str) -> dict:
         "rejected": total_rejected,
     }
 
-def find_image(stem: str, project: str) -> Path | None:
-    """Найти картинку для отображения."""
-    project_dir = PROJECTS_DIR / project
-    review_dir = project_dir / "ann" / "review"
-    clean_dir = project_dir / "ann" / "clean"
 
-    # Annotated версия
-    for bucket in [review_dir, clean_dir]:
-        annotated = bucket / f"{stem}_annotated.jpg"
+def find_annotated_image(stem: str, project: str) -> Path | None:
+    """Найти картинку с наложенными боксами/масками (после QC)."""
+    project_dir = PROJECTS_DIR / project
+    for bucket in ["review", "clean"]:
+        annotated = project_dir / "ann" / bucket / f"{stem}_annotated.jpg"
         if annotated.exists():
             return annotated
+    return None
 
-    # Оригинал
-    frames_dir = project_dir / "frames"
+
+def find_original_image(stem: str, project: str) -> Path | None:
+    """Найти оригинальный кадр без разметки поверх."""
+    frames_dir = PROJECTS_DIR / project / "frames"
     if frames_dir.exists():
         for ext in [".jpg", ".jpeg", ".png"]:
             candidate = frames_dir / f"{stem}{ext}"
             if candidate.exists():
                 return candidate
-
     return None
+
+
+def find_image(stem: str, project: str) -> Path | None:
+    """Найти картинку для отображения (аннотированная в приоритете, иначе оригинал)."""
+    return find_annotated_image(stem, project) or find_original_image(stem, project)
 
 
 def move_to_clean(stem: str, project: str):
@@ -186,22 +190,48 @@ def move_to_clean(stem: str, project: str):
     clean_dir.mkdir(parents=True, exist_ok=True)
     (clean_dir / "masks").mkdir(parents=True, exist_ok=True)
 
-    # JSON
     json_src = review_dir / f"{stem}.json"
     if json_src.exists():
         shutil.move(str(json_src), str(clean_dir / json_src.name))
 
-    # Annotated
     ann_src = review_dir / f"{stem}_annotated.jpg"
     if ann_src.exists():
         shutil.move(str(ann_src), str(clean_dir / ann_src.name))
 
-    # Маски
     src_masks = review_dir / "masks"
     dst_masks = clean_dir / "masks"
     if src_masks.exists():
         for mask in src_masks.glob(f"{stem}_*"):
             shutil.move(str(mask), str(dst_masks / mask.name))
+
+
+def find_yolo_split_dir(dataset_dir: Path, split: str) -> tuple[Path | None, Path | None]:
+    """
+    Определяет расположение images/labels для сплита — поддерживает ОБА макета:
+      НОВЫЙ (после "Объединения датасетов"): dataset_dir/<split>/images, .../labels
+      СТАРЫЙ (после convert_to_yolo_seg.py):  dataset_dir/images/<split>, .../labels
+    Возвращает (images_dir, labels_dir) либо (None, None), если сплита нет.
+    """
+    new_images = dataset_dir / split / "images"
+    new_labels = dataset_dir / split / "labels"
+    if new_images.exists():
+        return new_images, new_labels
+
+    old_images = dataset_dir / "images" / split
+    old_labels = dataset_dir / "labels" / split
+    if old_images.exists():
+        return old_images, old_labels
+
+    return None, None
+
+
+def has_yolo_dataset(project: str) -> bool:
+    """Есть ли у проекта готовый YOLO-датасет (в любом из двух макетов)."""
+    dataset_dir = PROJECTS_DIR / project / "dataset_yolo"
+    if not dataset_dir.exists():
+        return False
+    train_images, _ = find_yolo_split_dir(dataset_dir, "train")
+    return train_images is not None
 
 
 # ── Загрузка цветов классов ──────────────────────────────────────────────────
@@ -211,7 +241,12 @@ def load_class_colors() -> dict[str, str]:
         return {}
     with open("classes.json", "r", encoding="utf-8") as f:
         data = json.load(f)
-    return {c["name"]: c.get("color", "#808080") for c in data["classes"]}
+    # Исправление пробелов в ключах, если они есть
+    classes_list = data.get("classes", data.get("classes ", []))
+    return {
+        c.get("name", c.get("name ", "")).strip(): c.get("color", "#808080").strip()
+        for c in classes_list
+    }
 
 
 CLASS_COLORS = load_class_colors()
@@ -225,11 +260,15 @@ PAGE_REVIEW = "Review"
 PAGE_SPOTCHECK = "Spot Check"
 PAGE_CONVERT = "Конвертация"
 PAGE_MERGE = "Объединение датасетов"
+PAGE_TRAIN = " Обучение"
+PAGE_TEST = "🧪 Тест модели"
+PAGE_BENCHMARK = "📊 Бенчмарк"  # <-- ДОБАВЛЕНО
 
 st.sidebar.title("Auto-Labeling")
 page = st.sidebar.radio(
     "Навигация",
-    [PAGE_HOME, PAGE_UPLOAD, PAGE_EXTRACT, PAGE_PIPELINE, PAGE_REVIEW, PAGE_SPOTCHECK, PAGE_CONVERT, PAGE_MERGE],
+    [PAGE_HOME, PAGE_UPLOAD, PAGE_EXTRACT, PAGE_PIPELINE, PAGE_REVIEW, PAGE_SPOTCHECK,
+     PAGE_CONVERT, PAGE_MERGE, PAGE_TRAIN, PAGE_TEST, PAGE_BENCHMARK],
     index=0,
 )
 
@@ -246,6 +285,7 @@ if page == PAGE_HOME:
     4. Проверьте результаты вручную
     5. Конвертируйте в YOLO для обучения
     6. Объедините датасеты из разных проектов
+    7. Обучите student-модель и протестируйте её
 
     ### Быстрый старт:
     """)
@@ -323,7 +363,7 @@ elif page == PAGE_EXTRACT:
 
     video_path = project_dir / "video.mp4"
     if not video_path.exists():
-        st.error(f"❌ Видео не найдено в {video_path}")
+        st.error(f" Видео не найдено в {video_path}")
         st.stop()
 
     fps = st.slider("Кадров в секунду", 1, 30, 5)
@@ -351,10 +391,10 @@ elif page == PAGE_EXTRACT:
                 if status.get("status") == "done":
                     st.success("✅ Кадры успешно извлечены!")
                 else:
-                    st.error(f"❌ Ошибка: {status.get('message')}")
+                    st.error(f" Ошибка: {status.get('message')}")
 
 elif page == PAGE_PIPELINE:
-    st.title("⚙️ Запуск пайплайна детекции")
+    st.title("️ Запуск пайплайна детекции")
 
     projects = get_projects()
     if not projects:
@@ -369,10 +409,11 @@ elif page == PAGE_PIPELINE:
         st.error(f" Кадры не найдены в {frames_dir}")
         st.stop()
 
-    # Загрузить классы
     with open("classes.json", "r", encoding="utf-8") as f:
         classes_data = json.load(f)
-    class_names = [c["name"] for c in classes_data["classes"]]
+    # Исправление пробелов в ключах
+    classes_list = classes_data.get("classes", classes_data.get("classes ", []))
+    class_names = [c.get("name", c.get("name ", "")).strip() for c in classes_list]
 
     if "pipeline_classes_select" not in st.session_state:
         st.session_state.pipeline_classes_select = list(class_names)
@@ -426,80 +467,83 @@ elif page == PAGE_PIPELINE:
 
 elif page == PAGE_REVIEW:
     st.title("🔍 Ручная проверка детекций")
- 
+
     projects = get_projects()
     if not projects:
         st.warning("⚠️ Нет проектов.")
         st.stop()
- 
+
     selected_project = st.selectbox("Выберите проект", projects)
     project_dir = PROJECTS_DIR / selected_project
-    
-    # Статистика по проекту
+
     stats = get_project_stats(selected_project)
-    
+
     st.sidebar.markdown("---")
     st.sidebar.subheader("📊 Статистика проекта")
-    
-    # Прогресс-бар
+
     if stats["total_images"] > 0:
         progress = stats["clean_count"] / stats["total_images"]
         st.sidebar.progress(progress, text=f"Проверено: {stats['clean_count']} из {stats['total_images']}")
     else:
         st.sidebar.info("Нет данных для отображения")
-    
-    # Счетчики
+
     st.sidebar.metric("📋 В review", stats["review_count"])
     st.sidebar.metric("✅ В clean", stats["clean_count"])
     st.sidebar.markdown("---")
     st.sidebar.metric("✅ Принято детекций", stats["accepted"])
     st.sidebar.metric("⚠️ На проверке", stats["needs_review"])
     st.sidebar.metric("❌ Отклонено", stats["rejected"])
-    
+
     json_files = get_review_files(selected_project)
- 
+
     if not json_files:
         st.success("🎉 Все детекции проверены!")
         st.stop()
- 
-    # Навигация
+
     if "review_index" not in st.session_state:
         st.session_state.review_index = 0
- 
+
     if st.session_state.review_index >= len(json_files):
         st.session_state.review_index = 0
- 
+
     current_file = json_files[st.session_state.review_index]
     stem = current_file.stem
- 
-    # Загрузить данные
+
     with open(current_file, "r", encoding="utf-8") as f:
         data = json.load(f)
     detections = data.get("detections", [])
- 
-    # Найти картинку
-    image_path = find_image(stem, selected_project)
- 
-    # Две колонки — изображение уже, панель детекций шире
+
+    # Переключатель: аннотированная картинка (с масками/боксами) vs оригинал.
+    view_mode = st.radio(
+        "Показать",
+        ["🖍️ Аннотированная", "🖼️ Оригинал"],
+        horizontal=True,
+        key="review_view_mode",
+    )
+
+    if view_mode == "🖍️ Аннотированная":
+        image_path = find_annotated_image(stem, selected_project) or find_original_image(stem, selected_project)
+    else:
+        image_path = find_original_image(stem, selected_project) or find_annotated_image(stem, selected_project)
+
     col_img, col_det = st.columns([1.5, 1])
- 
+
     with col_img:
         if image_path:
-            # Ограничиваем высоту изображения
             st.image(str(image_path), width="stretch")
             st.caption(f"📷 {stem}")
         else:
             st.error("❌ Картинка не найдена!")
- 
+
     def _write_annotations():
         with open(current_file, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2, ensure_ascii=False)
- 
+
     def _accept(det_idx: int):
         detections[det_idx]["qc_bucket"] = "accepted"
         detections[det_idx]["qc_reason"] = "принята ручной проверкой"
         _write_annotations()
- 
+
     def _reject(det_idx: int):
         det = detections[det_idx]
         det["qc_bucket"] = "rejected"
@@ -508,20 +552,19 @@ elif page == PAGE_REVIEW:
         if mask_path and Path(mask_path).exists():
             Path(mask_path).unlink()
         _write_annotations()
- 
-    # УМЕНЬШЕНА ВЫСОТА ПАНЕЛИ с 650 до 400
+
     DETECTIONS_PANEL_HEIGHT = 400
- 
+
     with col_det:
         st.subheader(" Детекции")
- 
+
         with st.container(height=DETECTIONS_PANEL_HEIGHT, border=True):
             for idx, det in enumerate(detections):
                 bucket = det.get("qc_bucket", "accepted")
                 cls = det["class"]
                 conf = det.get("confidence", 0)
                 reason = det.get("qc_reason", "")
- 
+
                 if bucket == "accepted":
                     emoji = "✅"
                     conf_color = "green"
@@ -529,14 +572,13 @@ elif page == PAGE_REVIEW:
                     emoji = "⚠️"
                     conf_color = "orange"
                 else:
-                    emoji = ""
+                    emoji = "❌"
                     conf_color = "red"
- 
+
                 cls_color = CLASS_COLORS.get(cls, "#808080")
- 
-                # Компактный layout: 3 колонки
+
                 info_col, accept_col, reject_col = st.columns([4, 1, 1])
- 
+
                 with info_col:
                     st.markdown(f"**{emoji} [{idx}] {cls}**")
                     st.markdown(f":{conf_color}[{conf:.2f}]")
@@ -546,7 +588,7 @@ elif page == PAGE_REVIEW:
                         f"<div style='width:24px;height:24px;background:{cls_color};border:2px solid #333;border-radius:3px;display:inline-block;margin:2px 0'></div>",
                         unsafe_allow_html=True,
                     )
- 
+
                 with accept_col:
                     st.button(
                         "✅",
@@ -556,7 +598,7 @@ elif page == PAGE_REVIEW:
                         on_click=_accept,
                         args=(idx,),
                     )
- 
+
                 with reject_col:
                     st.button(
                         "❌",
@@ -566,33 +608,31 @@ elif page == PAGE_REVIEW:
                         on_click=_reject,
                         args=(idx,),
                     )
- 
+
                 st.divider()
- 
-        # Статистика компактно
+
         accepted = sum(1 for d in detections if d.get("qc_bucket") == "accepted")
         review = sum(1 for d in detections if d.get("qc_bucket") == "needs_review")
         rejected = sum(1 for d in detections if d.get("qc_bucket") == "rejected")
- 
+
         st.markdown(f"**Итого:** ✅ {accepted} | ⚠️ {review} | ❌ {rejected}")
- 
-    # Кнопки навигации — компактно
+
     st.markdown("---")
     col_nav1, col_nav2, col_nav3, col_nav4 = st.columns([1, 1, 1, 2])
-    
+
     with col_nav1:
         st.caption(f" {st.session_state.review_index + 1}/{len(json_files)}")
-    
+
     with col_nav2:
         if st.button("⬅️ Назад", disabled=st.session_state.review_index == 0, use_container_width=True):
             st.session_state.review_index -= 1
             st.rerun()
- 
+
     with col_nav3:
         if st.button("Вперёд ➡️", disabled=st.session_state.review_index == len(json_files) - 1, use_container_width=True):
             st.session_state.review_index += 1
             st.rerun()
- 
+
     with col_nav4:
         has_review = any(d.get("qc_bucket") == "needs_review" for d in detections)
         if st.button("✅ В clean", disabled=has_review, use_container_width=True):
@@ -601,69 +641,73 @@ elif page == PAGE_REVIEW:
             st.rerun()
 
 elif page == PAGE_SPOTCHECK:
-    st.title("🎲 Spot Check — быстрая проверка")
-    
+    st.title(" Spot Check — быстрая проверка")
+
     st.markdown("""
     **Spot Check** — режим для быстрой проверки случайных кадров из review.
     Идеально подходит для первичной оценки качества детекций.
     """)
-    
+
     projects = get_projects()
     if not projects:
-        st.warning("⚠️ Нет проектов.")
+        st.warning("️ Нет проектов.")
         st.stop()
-    
+
     selected_project = st.selectbox("Выберите проект", projects)
     project_dir = PROJECTS_DIR / selected_project
-    
+
     json_files = get_review_files(selected_project)
-    
+
     if not json_files:
         st.success(" Все детекции проверены! Нечего проверять.")
         st.stop()
-    
-    # Кнопка случайного выбора
+
     col1, col2, col3 = st.columns([1, 2, 1])
-    
+
     with col2:
         if st.button("🎲 Случайный кадр", use_container_width=True, type="primary"):
-            import random
             st.session_state.spotcheck_file = random.choice(json_files)
             st.session_state.spotcheck_active = True
-    
-    # Если есть выбранный файл для spot check
+
     if "spotcheck_active" in st.session_state and st.session_state.spotcheck_active:
         current_file = st.session_state.spotcheck_file
         stem = current_file.stem
-        
-        # Загрузить данные
+
         with open(current_file, "r", encoding="utf-8") as f:
             data = json.load(f)
         detections = data.get("detections", [])
-        
-        # Найти картинку
-        image_path = find_image(stem, selected_project)
-        
-        # Компактный layout
+
+        view_mode = st.radio(
+            "Показать",
+            ["️ Аннотированная", "️ Оригинал"],
+            horizontal=True,
+            key="spotcheck_view_mode",
+        )
+
+        if view_mode == "🖍️ Аннотированная":
+            image_path = find_annotated_image(stem, selected_project) or find_original_image(stem, selected_project)
+        else:
+            image_path = find_original_image(stem, selected_project) or find_annotated_image(stem, selected_project)
+
         col_img, col_det = st.columns([1.5, 1])
-        
+
         with col_img:
             if image_path:
                 st.image(str(image_path), width="stretch")
                 st.caption(f"📷 {stem}")
             else:
                 st.error("❌ Картинка не найдена!")
-        
+
         def _write_spotcheck_annotations():
             with open(current_file, "w", encoding="utf-8") as f:
                 json.dump(data, f, indent=2, ensure_ascii=False)
-        
+
         def _accept_spotcheck(det_idx: int):
             detections[det_idx]["qc_bucket"] = "accepted"
             detections[det_idx]["qc_reason"] = "принята в spot check"
             _write_spotcheck_annotations()
             st.rerun()
-        
+
         def _reject_spotcheck(det_idx: int):
             det = detections[det_idx]
             det["qc_bucket"] = "rejected"
@@ -673,18 +717,18 @@ elif page == PAGE_SPOTCHECK:
                 Path(mask_path).unlink()
             _write_spotcheck_annotations()
             st.rerun()
-        
+
         DETECTIONS_PANEL_HEIGHT = 400
-        
+
         with col_det:
             st.subheader(" Детекции")
-            
+
             with st.container(height=DETECTIONS_PANEL_HEIGHT, border=True):
                 for idx, det in enumerate(detections):
                     bucket = det.get("qc_bucket", "accepted")
                     cls = det["class"]
                     conf = det.get("confidence", 0)
-                    
+
                     if bucket == "accepted":
                         emoji = "✅"
                         conf_color = "green"
@@ -694,11 +738,11 @@ elif page == PAGE_SPOTCHECK:
                     else:
                         emoji = ""
                         conf_color = "red"
-                    
+
                     cls_color = CLASS_COLORS.get(cls, "#808080")
-                    
+
                     info_col, accept_col, reject_col = st.columns([4, 1, 1])
-                    
+
                     with info_col:
                         st.markdown(f"**{emoji} [{idx}] {cls}**")
                         st.markdown(f":{conf_color}[{conf:.2f}]")
@@ -706,32 +750,29 @@ elif page == PAGE_SPOTCHECK:
                             f"<div style='width:24px;height:24px;background:{cls_color};border:2px solid #333;border-radius:3px;display:inline-block;margin:2px 0'></div>",
                             unsafe_allow_html=True,
                         )
-                    
+
                     with accept_col:
-                        st.button("✅", key=f"spot_accept_{stem}_{idx}", 
+                        st.button("✅", key=f"spot_accept_{stem}_{idx}",
                                  disabled=bucket == "accepted",
                                  on_click=_accept_spotcheck, args=(idx,))
-                    
+
                     with reject_col:
                         st.button("❌", key=f"spot_reject_{stem}_{idx}",
                                  disabled=bucket == "rejected",
                                  on_click=_reject_spotcheck, args=(idx,))
-                    
+
                     st.divider()
-            
-            # Кнопки действий
+
             st.markdown("---")
             col_btn1, col_btn2 = st.columns(2)
-            
+
             with col_btn1:
                 if st.button("🎲 Ещё случайный", use_container_width=True):
-                    import random
                     st.session_state.spotcheck_file = random.choice(json_files)
                     st.rerun()
-            
+
             with col_btn2:
                 if st.button("🔍 В полный review", use_container_width=True):
-                    # Находим индекс текущего файла в списке
                     try:
                         idx = json_files.index(current_file)
                         st.session_state.review_index = idx
@@ -739,16 +780,15 @@ elif page == PAGE_SPOTCHECK:
                         st.session_state.review_index = 0
                     st.session_state.spotcheck_active = False
                     st.rerun()
-        
-        # Статистика
+
         accepted = sum(1 for d in detections if d.get("qc_bucket") == "accepted")
         review = sum(1 for d in detections if d.get("qc_bucket") == "needs_review")
         rejected = sum(1 for d in detections if d.get("qc_bucket") == "rejected")
-        
+
         st.markdown(f"**Детекций:** ✅ {accepted} | ⚠️ {review} | ❌ {rejected}")
-    
+
     else:
-        st.info("👆 Нажмите **'🎲 Случайный кадр'**, чтобы начать проверку")
+        st.info(" Нажмите **'🎲 Случайный кадр'**, чтобы начать проверку")
         st.markdown(f"**Всего кадров в review:** {len(json_files)}")
 
 elif page == PAGE_CONVERT:
@@ -790,7 +830,6 @@ elif page == PAGE_CONVERT:
                 if status.get("status") == "done":
                     st.success("✅ Конвертация завершена!")
 
-                    # Скачать датасет
                     dataset_dir = project_dir / "dataset_yolo"
                     if dataset_dir.exists():
                         zip_path = dataset_dir / f"{selected_project}_dataset.zip"
@@ -808,39 +847,51 @@ elif page == PAGE_CONVERT:
 
 elif page == PAGE_MERGE:
     st.title("📦 Объединение YOLO-датасетов")
-    
+
     st.markdown("""
-    Выберите несколько проектов, у которых уже выполнена конвертация в YOLO, 
-    чтобы объединить их изображения и аннотации в один новый проект.
+    Выберите несколько проектов, у которых уже выполнена конвертация в YOLO,
+    чтобы объединить их в один датасет с **честным train/val сплитом**
+    (картинки не пересекаются между train и val — в отличие от старой
+    версии, где val дублировал train).
+
+    Итоговый датасет использует макет `train/images`, `train/labels`,
+    `val/images`, `val/labels` (и `test/`, если задать долю test > 0).
     """)
-    
+
     projects = get_projects()
     if not projects:
-        st.warning("⚠️ Нет проектов.")
+        st.warning("️ Нет проектов.")
         st.stop()
-    
-    # Фильтруем только те проекты, где уже есть dataset_yolo
-    projects_with_dataset = []
-    for proj in projects:
-        dataset_dir = PROJECTS_DIR / proj / "dataset_yolo"
-        if dataset_dir.exists() and (dataset_dir / "images" / "train").exists():
-            projects_with_dataset.append(proj)
-    
+
+    # Проекты с готовым YOLO-датасетом — в ЛЮБОМ из двух макетов
+    projects_with_dataset = [p for p in projects if has_yolo_dataset(p)]
+
     if len(projects_with_dataset) < 2:
         st.warning("⚠️ Для объединения нужно как минимум **2** проекта с готовым YOLO-датасетом. Сначала завершите конвертацию в соответствующих проектах.")
         st.stop()
-    
+
     st.subheader("1. Выберите исходные проекты")
     selected_projects = st.multiselect(
         "Проекты для объединения",
         options=projects_with_dataset,
-        help="Будут взяты изображения и метки из папок dataset_yolo/images/train и dataset_yolo/labels/train"
+        help="Берутся ВСЕ картинки (train+val) каждого проекта — дальше пересобираются в новый честный сплит",
     )
-    
+
     st.subheader("2. Имя нового проекта")
     new_project_name = st.text_input("Введите имя для объединенного проекта", "merged_dataset")
     new_project_dir = PROJECTS_DIR / new_project_name
-    
+
+    st.subheader("3. Доли val / test")
+    col_val, col_test = st.columns(2)
+    with col_val:
+        val_ratio = st.slider("Доля val", 0.05, 0.5, 0.2, 0.05)
+    with col_test:
+        test_ratio = st.slider("Доля test (0 — без test-сплита)", 0.0, 0.3, 0.0, 0.05)
+
+    ratio_ok = (val_ratio + test_ratio) < 0.9
+    if not ratio_ok:
+        st.error("❌ val + test слишком большие — на train почти ничего не останется.")
+
     if new_project_name in projects:
         st.error(f" Проект с именем '{new_project_name}' уже существует! Выберите другое имя.")
         can_merge = False
@@ -848,86 +899,115 @@ elif page == PAGE_MERGE:
         st.error("❌ Имя проекта не может быть пустым.")
         can_merge = False
     elif len(selected_projects) < 2:
-        st.warning("⚠️ Выберите минимум 2 проекта для объединения.")
+        st.warning("️ Выберите минимум 2 проекта для объединения.")
         can_merge = False
     else:
-        can_merge = True
-    
-    if st.button("🚀 Объединить датасеты", width="stretch", disabled=not can_merge):
+        can_merge = ratio_ok
+
+    if st.button(" Объединить датасеты", width="stretch", disabled=not can_merge):
         with st.spinner("Объединение датасетов... Это может занять некоторое время."):
             try:
-                new_dataset_dir = new_project_dir / "dataset_yolo"
-                new_images_dir = new_dataset_dir / "images" / "train"
-                new_labels_dir = new_dataset_dir / "labels" / "train"
-                
-                new_images_dir.mkdir(parents=True, exist_ok=True)
-                new_labels_dir.mkdir(parents=True, exist_ok=True)
-                
-                total_images = 0
-                total_labels = 0
-                
-                progress_bar = st.progress(0)
-                
-                for i, proj in enumerate(selected_projects):
+                # ─ 1. Собираем ВСЕ пары (картинка, лейбл) из всех сплитов каждого проекта ──
+                all_pairs = []  # (image_path, label_path_or_None, project_name)
+                for proj in selected_projects:
                     src_dataset = PROJECTS_DIR / proj / "dataset_yolo"
-                    src_images = src_dataset / "images" / "train"
-                    src_labels = src_dataset / "labels" / "train"
-                    
-                    if not src_images.exists():
-                        continue
-                        
-                    img_files = list(src_images.glob("*"))
-                    for img_path in img_files:
-                        stem = img_path.stem
-                        ext = img_path.suffix
-                        
-                        # Добавляем префикс имени проекта, чтобы избежать коллизий имен файлов
-                        # (например, frame_000001.jpg из разных проектов)
-                        new_stem = f"{proj}_{stem}"
-                        
-                        # Копируем изображение
-                        shutil.copy(img_path, new_images_dir / f"{new_stem}{ext}")
-                        total_images += 1
-                        
-                        # Копируем соответствующую аннотацию, если она есть
-                        label_path = src_labels / f"{stem}.txt"
-                        if label_path.exists():
-                            shutil.copy(label_path, new_labels_dir / f"{new_stem}.txt")
+                    for split in ("train", "val", "test"):
+                        src_images, src_labels = find_yolo_split_dir(src_dataset, split)
+                        if src_images is None:
+                            continue
+                        for img_path in sorted(src_images.iterdir()):
+                            if img_path.suffix.lower() not in (".jpg", ".jpeg", ".png"):
+                                continue
+                            label_path = src_labels / f"{img_path.stem}.txt"
+                            all_pairs.append((img_path, label_path if label_path.exists() else None, proj))
+
+                if not all_pairs:
+                    st.error(" Не найдено ни одной картинки в выбранных проектах.")
+                    st.stop()
+
+                # ── 2. Честный shuffle + split (train/val/test НЕ пересекаются) ──
+                random.seed(42)  # воспроизводимость между запусками
+                shuffled = all_pairs.copy()
+                random.shuffle(shuffled)
+
+                total = len(shuffled)
+                n_val = max(1, int(total * val_ratio))
+                n_test = int(total * test_ratio)
+                n_train = total - n_val - n_test
+
+                train_pairs = shuffled[:n_train]
+                val_pairs = shuffled[n_train:n_train + n_val]
+                test_pairs = shuffled[n_train + n_val:]
+
+                splits = {"train": train_pairs, "val": val_pairs}
+                if test_pairs:
+                    splits["test"] = test_pairs
+
+                # ── 3. Копируем в НОВЫЙ макет: <split>/images/, <split>/labels/ ──
+                new_dataset_dir = new_project_dir / "dataset_yolo"
+                progress_bar = st.progress(0)
+                total_copied = 0
+                total_labels = 0
+                total_to_copy = sum(len(v) for v in splits.values())
+
+                for split_name, pairs in splits.items():
+                    images_out = new_dataset_dir / split_name / "images"
+                    labels_out = new_dataset_dir / split_name / "labels"
+                    images_out.mkdir(parents=True, exist_ok=True)
+                    labels_out.mkdir(parents=True, exist_ok=True)
+
+                    for img_path, label_path, proj in pairs:
+                        # Префикс именем проекта — чтобы избежать коллизий имён
+                        new_stem = f"{proj}_{img_path.stem}"
+
+                        shutil.copy(img_path, images_out / f"{new_stem}{img_path.suffix}")
+                        total_copied += 1
+
+                        if label_path is not None:
+                            shutil.copy(label_path, labels_out / f"{new_stem}.txt")
                             total_labels += 1
-                    
-                    # Обновляем прогресс-бар
-                    progress_bar.progress((i + 1) / len(selected_projects))
-                
-                # Создаем data.yaml для нового объединенного датасета
+                        else:
+                            # картинка без объектов — пустой .txt, чтобы не выпасть из датасета
+                            (labels_out / f"{new_stem}.txt").touch()
+
+                        if total_to_copy:
+                            progress_bar.progress(min(1.0, total_copied / total_to_copy))
+
+                # ─ 4. data.yaml под новый макет ─
                 with open("classes.json", "r", encoding="utf-8") as f:
                     classes_data = json.load(f)
-                
-                names = [c["name"] for c in sorted(classes_data["classes"], key=lambda c: c["index"])]
-                
+                classes_list = classes_data.get("classes", classes_data.get("classes ", []))
+                names = [c.get("name", c.get("name ", "")).strip() for c in classes_list]
+
                 data_yaml = {
                     "path": str(new_dataset_dir.resolve()),
-                    "train": "images/train",
-                    "val": "images/train", # Пока используем train как val (можно поправить при реальном разделении)
+                    "train": "train/images",
+                    "val": "val/images",
                     "nc": len(names),
                     "names": names,
                 }
-                
+                if "test" in splits:
+                    data_yaml["test"] = "test/images"
+
                 with open(new_dataset_dir / "data.yaml", "w", encoding="utf-8") as f:
                     yaml.dump(data_yaml, f, allow_unicode=True, sort_keys=False)
-                
+
                 st.success(f"✅ Датасеты успешно объединены в проект: **{new_project_name}**!")
+                split_summary = f"train={len(train_pairs)}, val={len(val_pairs)}"
+                if test_pairs:
+                    split_summary += f", test={len(test_pairs)}"
                 st.markdown(f"""
                 **Статистика объединения:**
-                - 🖼️ Изображений скопировано: **{total_images}**
+                - 🖼️ Изображений скопировано: **{total_copied}** ({split_summary})
                 - 🏷️ Файлов аннотаций скопировано: **{total_labels}**
                 - 📁 Путь к новому датасету: `{new_dataset_dir}`
                 """)
-                
-                # Предлагаем скачать объединенный датасет
+                st.caption("✅ train/val/test — честные непересекающиеся сплиты (не дублируют друг друга).")
+
                 zip_path = new_dataset_dir / f"{new_project_name}_merged.zip"
                 with st.spinner("Создание ZIP-архива..."):
                     shutil.make_archive(str(zip_path.with_suffix("")), 'zip', new_dataset_dir)
-                
+
                 with open(zip_path, "rb") as f:
                     st.download_button(
                         "📥 Скачать объединенный YOLO-датасет",
@@ -935,7 +1015,275 @@ elif page == PAGE_MERGE:
                         file_name=f"{new_project_name}_merged.zip",
                         mime="application/zip"
                     )
-                
-            except Exception as e:
-                st.error(f"❌ Произошла ошибка при объединении: {str(e)}")
 
+            except Exception as e:
+                st.error(f" Произошла ошибка при объединении: {str(e)}")
+
+elif page == PAGE_TRAIN:
+    st.title("🎓 Обучение student-модели")
+
+    projects = get_projects()
+    projects_with_dataset = [p for p in projects if has_yolo_dataset(p)]
+
+    if not projects_with_dataset:
+        st.warning("⚠️ Нет проектов с готовым YOLO-датасетом. Сначала пройди 'Конвертация' (или 'Объединение датасетов' для нескольких проектов).")
+        st.stop()
+
+    selected_project = st.selectbox(
+        "Проект для обучения",
+        projects_with_dataset,
+        help="Можно выбрать как обычный проект после 'Конвертации', так и уже объединённый через 'Объединение датасетов'",
+    )
+
+    val_images, _ = find_yolo_split_dir(PROJECTS_DIR / selected_project / "dataset_yolo", "val")
+    if val_images is None:
+        st.caption("️ У этого проекта нет отдельного val-сплита — val будет совпадать с train, "
+                   "метрики валидации будут оптимистичными.")
+
+    run_name = st.text_input("Название запуска (run name)", value="run_1")
+
+    col1, col2 = st.columns(2)
+    with col1:
+        base_model = st.selectbox("Базовая модель (transfer learning)", ["yolo26n.pt", "yolov8n.pt"])
+        epochs = st.number_input("Эпохи", min_value=1, max_value=1000, value=100)
+        imgsz = st.selectbox("Размер изображения", [416, 512, 640, 768, 960], index=2)
+    with col2:
+        batch = st.number_input("Batch size", min_value=1, max_value=256, value=16)
+        device = st.selectbox("Устройство", ["0", "cpu"], help="'0' — первая GPU, 'cpu' — без GPU")
+
+    if st.button("🎓 Запустить обучение", width="stretch"):
+        result = api_post("/train-model", {
+            "project": selected_project,
+            "run_name": run_name,
+            "base_model": base_model,
+            "epochs": int(epochs),
+            "imgsz": int(imgsz),
+            "batch": int(batch),
+            "device": device,
+        })
+
+        if "task_id" in result:
+            st.session_state["train_task_id"] = result["task_id"]
+            st.session_state["train_task_project"] = selected_project
+            st.rerun()
+
+    # Прогресс обучения показываем отдельным блоком
+    if "train_task_id" in st.session_state:
+        st.markdown("---")
+        st.subheader(f"📊 Прогресс: {st.session_state.get('train_task_project', '')}")
+
+        status = api_get(f"/task/{st.session_state['train_task_id']}")
+        st.progress(min(1.0, max(0.0, status.get("progress", 0.0))))
+        st.text(f"Статус: {status.get('status')} — {status.get('message')}")
+
+        if status.get("status") in ("done", "failed"):
+            if status.get("status") == "done":
+                st.success("✅ Обучение завершено!")
+            else:
+                st.error("❌ Обучение завершилось с ошибкой")
+            if st.button("Очистить статус"):
+                del st.session_state["train_task_id"]
+                st.session_state.pop("train_task_project", None)
+                st.rerun()
+        else:
+            time.sleep(3)
+            st.rerun()
+
+elif page == PAGE_TEST:
+    st.title("🧪 Тест обученной модели")
+
+    projects = get_projects()
+    projects_with_runs = [p for p in projects if (PROJECTS_DIR / p / "runs").exists()]
+
+    if not projects_with_runs:
+        st.warning("️ Нет обученных моделей. Сначала обучи модель на вкладке 'Обучение'.")
+        st.stop()
+
+    selected_project = st.selectbox("Проект с обученной моделью", projects_with_runs)
+
+    runs_info = api_get(f"/training-runs/{selected_project}")
+    runs = runs_info.get("runs", [])
+
+    if not runs:
+        st.warning("⚠️ В этом проекте нет завершённых запусков обучения (best.pt не найден).")
+        st.stop()
+
+    run_names = [r["name"] for r in runs]
+    selected_run = st.selectbox("Запуск (run)", run_names)
+    weights_path = next(r["weights_path"] for r in runs if r["name"] == selected_run)
+
+    conf = st.slider("Порог уверенности (confidence)", 0.05, 0.95, 0.25, 0.05)
+
+    uploaded_file = st.file_uploader(
+        "Загрузи картинку или видео для теста",
+        type=["jpg", "jpeg", "png", "mp4", "avi", "mov"],
+    )
+
+    if uploaded_file and st.button("🧪 Запустить тест", width="stretch"):
+        test_dir = PROJECTS_DIR / selected_project / "test_uploads"
+        test_dir.mkdir(parents=True, exist_ok=True)
+
+        input_path = test_dir / uploaded_file.name
+        with open(input_path, "wb") as f:
+            f.write(uploaded_file.getbuffer())
+
+        output_path = test_dir / f"result_{Path(uploaded_file.name).stem}{Path(uploaded_file.name).suffix}"
+        if output_path.suffix.lower() in (".mp4", ".avi", ".mov"):
+            output_path = output_path.with_suffix(".mp4")
+
+        with st.spinner("Инференс..."):
+            result = api_post("/test-model", {
+                "weights_path": weights_path,
+                "input_path": str(input_path),
+                "output_path": str(output_path),
+                "classes_file": "classes.json",
+                "conf": conf,
+            })
+
+            if "task_id" in result:
+                task_id = result["task_id"]
+                status = {}
+                while True:
+                    status = api_get(f"/task/{task_id}")
+                    if status.get("status") in ("done", "failed"):
+                        break
+                    time.sleep(2)
+
+                if status.get("status") == "done":
+                    st.success("✅ Готово!")
+                    if output_path.suffix.lower() in (".jpg", ".jpeg", ".png"):
+                        st.image(str(output_path), width="stretch")
+                    else:
+                        st.video(str(output_path))
+
+                    result_json_path = output_path.with_suffix(".json")
+                    if result_json_path.exists():
+                        with open(result_json_path, "r", encoding="utf-8") as f:
+                            result_data = json.load(f)
+                        st.json(result_data)
+                else:
+                    st.error(f"❌ Ошибка: {status.get('message')}")
+
+
+# ═══════════════════════════════════════════════════════════════
+# 📊 НОВАЯ СТРАНИЦА: БЕНЧМАРК МОДЕЛИ
+# ═══════════════════════════════════════════════════════════════
+elif page == PAGE_BENCHMARK:
+    st.title("📊 Бенчмарк модели")
+    st.markdown("Оценка качества (mAP) и скорости (FPS) обученной модели.")
+
+    # 1. Получаем списки с сервера
+    models_resp = api_get("/benchmark/models")
+    datasets_resp = api_get("/benchmark/datasets")
+    models = models_resp.get("models", [])
+    datasets = datasets_resp.get("datasets", [])
+
+    if not models:
+        st.warning("⚠️ Обученные модели не найдены. Сначала обучите модель.")
+        st.stop()
+    if not datasets:
+        st.warning("⚠️ Датасеты не найдены. Сначала выполните конвертацию или объединение.")
+        st.stop()
+
+    # 2. Селекторы
+    col1, col2 = st.columns(2)
+    with col1:
+        selected_model = st.selectbox("🧠 Модель", options=models, format_func=lambda x: x["name"])
+    with col2:
+        selected_dataset = st.selectbox("📁 Датасет", options=datasets, format_func=lambda x: x["name"])
+
+    # 3. Параметры
+    with st.expander("️ Параметры бенчмарка", expanded=False):
+        c1, c2, c3, c4 = st.columns(4)
+        streams = c1.text_input("Потоки (через запятую)", "1,2,4,8")
+        duration = c2.number_input("Длительность (сек)", 5, 120, 15)
+        conf = c3.slider("Confidence threshold", 0.1, 0.9, 0.25, 0.05)
+        imgsz = c4.selectbox("Размер изображения", [320, 416, 512, 640, 768], index=3)
+
+    # 4. Кнопка запуска
+    if st.button("🚀 Запустить бенчмарк", type="primary", use_container_width=True):
+        ds_path = Path(selected_dataset["data_yaml"]).parent
+        # Пробуем оба формата расположения папки val
+        images_dir = str(ds_path / "val" / "images")
+        if not Path(images_dir).exists():
+            images_dir = str(ds_path / "images" / "val")
+
+        payload = {
+            "weights": selected_model["path"],
+            "data_yaml": selected_dataset["data_yaml"],
+            "images_dir": images_dir,
+            "streams": streams,
+            "duration": duration,
+            "conf": conf,
+            "imgsz": imgsz
+        }
+
+        res = api_post("/benchmark", payload)
+        if "task_id" in res:
+            st.session_state["bench_task_id"] = res["task_id"]
+            st.rerun()
+
+    # 5. Отображение прогресса и результатов
+    if "bench_task_id" in st.session_state:
+        task_id = st.session_state["bench_task_id"]
+        status = api_get(f"/task/{task_id}")
+
+        st.progress(status.get("progress", 0.0), text=status.get("message", "Выполняется..."))
+
+        if status.get("status") == "done":
+            st.success("✅ Бенчмарк завершён!")
+            result = status.get("result", {})
+
+            # --- Отрисовка результатов: Качество ---
+            if "quality" in result:
+                st.subheader("📈 Метрики качества")
+                overall = result["quality"].get("overall", {})
+                c1, c2, c3, c4 = st.columns(4)
+                c1.metric("Precision", f"{overall.get('precision', 0):.3f}")
+                c2.metric("Recall", f"{overall.get('recall', 0):.3f}")
+                c3.metric("mAP50", f"{overall.get('mAP50', 0):.3f}")
+                c4.metric("mAP50-95", f"{overall.get('mAP50-95', 0):.3f}")
+
+                st.markdown("#### По классам:")
+                class_data = []
+                for cls, metrics in result["quality"].get("per_class", {}).items():
+                    class_data.append({
+                        "Класс": cls,
+                        "Precision": f"{metrics.get('precision', 0):.3f}",
+                        "Recall": f"{metrics.get('recall', 0):.3f}",
+                        "mAP50": f"{metrics.get('mAP50', 0):.3f}",
+                        "mAP50-95": f"{metrics.get('mAP50-95', 0):.3f}"
+                    })
+                st.dataframe(pd.DataFrame(class_data), use_container_width=True, hide_index=True)
+
+            # --- Отрисовка результатов: Скорость ---
+            if "speed" in result:
+                st.subheader("⚡ Скорость (FPS)")
+                speed_data = []
+                for streams_count, metrics in result["speed"].items():
+                    speed_data.append({
+                        "Потоков": int(streams_count),
+                        "Суммарный FPS": metrics.get("aggregate_fps", 0),
+                        "На поток FPS": metrics.get("per_stream_fps", 0),
+                        "Всего кадров": metrics.get("total_frames", 0)
+                    })
+                df_speed = pd.DataFrame(speed_data).sort_values("Потоков")
+                st.dataframe(df_speed, use_container_width=True, hide_index=True)
+                
+                st.markdown("#### График производительности:")
+                st.line_chart(df_speed.set_index("Потоков")[["Суммарный FPS", "На поток FPS"]])
+
+            # Кнопка очистки
+            if st.button(" Очистить результат и запустить новый"):
+                del st.session_state["bench_task_id"]
+                st.rerun()
+
+        elif status.get("status") == "failed":
+            st.error(f"❌ Ошибка: {status.get('message')}")
+            if st.button("🔄 Попробовать снова"):
+                del st.session_state["bench_task_id"]
+                st.rerun()
+        else:
+            # Если running или pending, делаем rerun через 3 секунды для обновления прогресса
+            time.sleep(3)
+            st.rerun()

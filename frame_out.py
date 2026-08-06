@@ -54,9 +54,9 @@ def save_video_frames_incremental(video_path, output_folder, fps=1):
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser()
-    parser.add_argument("--video", required=True, help="Путь к видео")
-    parser.add_argument("--output", default="frames", help="Папка для кадров")
+    parser.add_argument("--video", required=True, help="Путь к видеофайлу")
+    parser.add_argument("--output", required=True, help="Папка для сохранения кадров")
     parser.add_argument("--fps", type=int, default=5, help="Кадров в секунду")
     args = parser.parse_args()
-    
-    save_video_frames_incremental(args.video, args.output, fps=args.fps)
+
+    save_video_frames_incremental(args.video, args.output, args.fps)

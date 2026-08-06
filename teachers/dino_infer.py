@@ -14,7 +14,16 @@ import torch
 from PIL import Image
 from transformers import AutoProcessor, AutoModelForZeroShotObjectDetection
 
-from pipeline_utils import list_images, get_primary_prompts, build_reverse_prompt_lookup
+from pipeline_utils import list_images, get_primary_prompts, build_reverse_prompt_lookup,iou
+
+def dedup_overlapping(detections: list[dict], iou_threshold: float = 0.6) -> list[dict]:
+    """Убирает дубликаты боксов одного класса — DINO не делает NMS между query-предложениями."""
+    detections = sorted(detections, key=lambda d: d.get("confidence") or 0, reverse=True)
+    kept = []
+    for d in detections:
+        if not any(d["class"] == k["class"] and iou(d["bbox"], k["bbox"]) > iou_threshold for k in kept):
+            kept.append(d)
+    return kept
 
 def load_prompts_with_fallback(classes: list[str], classes_file: str) -> dict[str, str]:
     """
@@ -64,7 +73,7 @@ def build_label_lookup(classes: list[str], classes_file: str) -> dict[str, str]:
 
 def process_image(model, processor, device, image_path: Path, classes: list[str],
                    classes_file: str,
-                   box_threshold: float = 0.3, text_threshold: float = 0.25) -> list[dict]:
+                   box_threshold: float = 0.45, text_threshold: float = 0.35) -> list[dict]:
     img = Image.open(image_path).convert("RGB")
     query = build_query(classes, classes_file)
     label_lookup = build_label_lookup(classes, classes_file)
@@ -95,6 +104,7 @@ def process_image(model, processor, device, image_path: Path, classes: list[str]
             "confidence": float(score),
             "source": "grounding_dino",
         })
+    detections = dedup_overlapping(detections)
     return detections
 
 
@@ -105,8 +115,8 @@ if __name__ == "__main__":
     parser.add_argument("--classes-file", default="classes.json",
                         help="Файл с классами и промптами (единый источник правды)")
     parser.add_argument("--model", default="IDEA-Research/grounding-dino-tiny")
-    parser.add_argument("--box-threshold", type=float, default=0.2)
-    parser.add_argument("--text-threshold", type=float, default=0.15)
+    parser.add_argument("--box-threshold", type=float, default=0.45)
+    parser.add_argument("--text-threshold", type=float, default=0.35)
     parser.add_argument("--out-dir", required=True)
     args = parser.parse_args()
 
@@ -123,7 +133,7 @@ if __name__ == "__main__":
     print(f"[grounding_dino] CUDA available: {torch.cuda.is_available()}", file=sys.stderr)
     print(f"[grounding_dino] загрузка модели ...")
 
-    processor = AutoProcessor.from_pretrained(args.model)
+    processor = AutoProcessor.from_pretrained(args.model,use_fast=False)
     model = AutoModelForZeroShotObjectDetection.from_pretrained(args.model).to(device).eval()
     print("[grounding_dino] модель загружена, начинаю обработку")
 

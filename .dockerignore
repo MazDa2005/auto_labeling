@@ -1,0 +1,29 @@
+# === ТЯЖЁЛЫЕ ПАПКИ С ДАННЫМИ (они монтируются через volumes, в образ не нужны!) ===
+frames/
+projects/
+annotations/
+dataset_yolo/
+runs/
+masks/
+
+# === ВИДЕОФАЙЛЫ ===
+*.mp4
+*.avi
+*.mov
+*.mkv
+
+# === СИСТЕМНЫЙ МУСОР ===
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+.git/
+.gitignore
+.env
+*.log
+docker/environments/*.yml.bak
+
+models/
+*.pt
+.vscode/
