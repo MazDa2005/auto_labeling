@@ -1,7 +1,6 @@
-# ═══════════════════════════════════════════════════════════
 # Python
-# ═══════════════════════════════════════════════════════════
 __pycache__/
+.mypy_cache
 *.py[cod]
 *$py.class
 *.so
@@ -17,17 +16,14 @@ build/
 venv/
 env/
 env.bak/
-
 .idea/
 .vscode/
 *.swp
 *.swo
 *~
 .DS_Store
-
 .envs/
 .env/
-
 
 # Видео и кадры
 /videos/
@@ -35,14 +31,14 @@ env.bak/
 /projects/*/video.mp4
 /projects/*/frames/
 
-# Модели (весят гигабайты)
+# Модели 
 /models/
 *.pt
 *.pth
 *.safetensors
 *.bin
 
-# Аннотации и маски (промежуточные результаты)
+# Аннотации и маски 
 /ann/
 /annotations/
 /dataset_yolo/
@@ -55,6 +51,7 @@ env.bak/
 /tmp/
 temp/
 
+#Секреты
 .env
 .env.local
 *.secret

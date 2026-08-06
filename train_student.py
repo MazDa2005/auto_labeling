@@ -1,8 +1,5 @@
 """
 train_student.py — обучение student-модели (YOLO) на объединённом YOLO-датасете.
-Поддерживает оба формата:
-  - Новый: images/train/, images/val/
-  - Roboflow: train/images/, valid/images/
 """
 import argparse
 import json
@@ -27,7 +24,7 @@ class MemoryCallback:
 def load_class_names(classes_file: str) -> list[str]:
     with open(classes_file, "r", encoding="utf-8") as f:
         data = json.load(f)
-    # Поддержка пробелов в ключах
+
     classes_list = data.get("classes", data.get("classes ", []))
     classes_sorted = sorted(classes_list, key=lambda c: c.get("index", c.get("index ", 0)))
     return [c.get("name", c.get("name ", "")).strip() for c in classes_sorted]
@@ -38,13 +35,11 @@ def find_split_dirs(dataset_dir: Path, split: str) -> tuple[Path | None, Path | 
     Находит папки images и labels для сплита, поддерживая оба формата.
     Возвращает (images_dir, labels_dir) или (None, None).
     """
-    # Формат 1: images/train/, labels/train/
     img_dir = dataset_dir / "images" / split
     lbl_dir = dataset_dir / "labels" / split
     if img_dir.exists():
         return img_dir, lbl_dir if lbl_dir.exists() else None
     
-    # Формат 2 (Roboflow): train/images/, train/labels/
     img_dir = dataset_dir / split / "images"
     lbl_dir = dataset_dir / split / "labels"
     if img_dir.exists():
@@ -61,7 +56,7 @@ def merge_yolo_datasets(source_dirs: list[Path], target_dir: Path) -> None:
 
     for src in source_dirs:
         project_name = src.parent.name
-        for split in ("train", "val"):
+        for split in ("train", "valid"):
             img_src_dir, lbl_src_dir = find_split_dirs(src, split)
             if img_src_dir is None:
                 continue

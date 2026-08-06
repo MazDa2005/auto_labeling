@@ -5,13 +5,6 @@
 
 Если картинка помечена как проблемная (F) — переносится обратно в review/ с пометкой
 flagged_by_spotcheck, чтобы её потом разобрали через review_helper.py как обычно.
-
-Ведёт лог уже проверенных картинок (--log), чтобы при повторном запуске не пересэмплировать
-то, что уже смотрели.
-
-Пример:
-    python spot_check.py --clean-dir ann/clean --percent 10
-    python spot_check.py --clean-dir ann-1/clean --count 20 --log spot_check_log.json
 """
 import argparse
 import json
@@ -37,8 +30,7 @@ def save_log(log_path: Path, log: dict):
 
 
 def move_back_to_review(stem: str, clean_dir: Path, ann_dir: Path, reason: str):
-    """Переносит картинку из clean/ обратно в review/ (аналог move_image_data из review_helper.py,
-    только в обратную сторону) — помечает все детекции этой картинки, требующие пересмотра."""
+    """Переносит картинку из clean/ обратно в review помечает все детекции этой картинки, требующие пересмотра."""
     review_dir = ann_dir / "review"
     review_dir.mkdir(parents=True, exist_ok=True)
     (review_dir / "masks").mkdir(parents=True, exist_ok=True)
@@ -47,8 +39,6 @@ def move_back_to_review(stem: str, clean_dir: Path, ann_dir: Path, reason: str):
     with open(json_path, "r", encoding="utf-8") as f:
         data = json.load(f)
 
-    # Помечаем картинку целиком как требующую внимания — конкретную детекцию человек
-    # определит сам при просмотре через review_helper.py, тут мы просто "открываем вопрос" заново
     for det in data.get("detections", []):
         if det.get("qc_bucket") == "accepted":
             det["qc_bucket"] = "needs_review"
@@ -112,8 +102,7 @@ def main():
             data = json.load(f)
         n_det = len(data.get("detections", []))
 
-        print(f"{'='*60}")
-        print(f"📷 {stem} ({n_det} детекций, все были accepted)")
+        print(f" {stem} ({n_det} детекций, все были accepted)")
 
         if annotated_path.exists():
             Image.open(annotated_path).show()
@@ -141,7 +130,6 @@ def main():
 
     save_log(log_path, log)
 
-    print(f"\n{'='*60}")
     print(f"Спот-чек завершён: ok={ok_count}, flagged={flagged_count}")
     if flagged_count:
         print(f"Помеченные картинки перенесены в review/ — разберите их через review_helper.py")

@@ -12,13 +12,11 @@
 #
 # Чтобы ЗАМЕНИТЬ модель — поменяйте script/conda_env/model_path у нужного stage.
 # Чтобы ДОБАВИТЬ этап — допишите новую запись, ничего в batch_label.py менять не нужно,
-#   главное чтобы новый скрипт соблюдал контракт для своего type (см. CONTRACT.md).
 # Чтобы ВРЕМЕННО отключить этап — enabled: false.
 
 stages:
-  # ──────────────────────────────────────────────────────────────────────────────
+
   # DETECT — поиск объектов по текстовым промптам из classes.json
-  # ──────────────────────────────────────────────────────────────────────────────
 
   - type: detect
     name: grounding_dino
@@ -26,8 +24,6 @@ stages:
     conda_env: dino
     script: teachers/dino_infer.py
     model_path: /home/iet/iet-share/models/grounding-dino-base
-    # Промпты берутся из classes.json (единый источник правды).
-    # Если у класса нет поля 'prompts' — fallback на имя класса с заменой '_' на пробелы.
 
   - type: detect
     name: locate_anything
@@ -36,12 +32,8 @@ stages:
     #python_exe: C:\Users\Admin\anaconda3\envs\nvidia\python.exe
     script: teachers/locate_infer.py
     model_path: /home/iet/iet-share/LocateAnything-3B
-    # Промпты тоже из classes.json. Модель возвращает в <ref> тот промпт, что мы ей передали,
-    # затем reverse lookup сопоставляет его с каноническим именем класса.
 
-  # ──────────────────────────────────────────────────────────────────────────────
   # REFINE — уточнение bbox до сегментационной маски
-  # ──────────────────────────────────────────────────────────────────────────────
 
   - type: refine
     name: sam3
@@ -50,12 +42,8 @@ stages:
     #python_exe: C:\Users\Admin\anaconda3\envs\sam3\python.exe
     script: teachers/sam3_refine.py
     model_path: /home/iet/iet-share/sam3/sam3.pt
-    # Сохраняет маски в masks/<image_stem>/det_XXX_<class>.png
-    # Добавляет в детекцию поля: mask_path, mask_area, refine_iou
 
-  # ──────────────────────────────────────────────────────────────────────────────
   # VERIFY — обогащение детекций доп. сигналами (не отбрасывает, а добавляет поля)
-  # ──────────────────────────────────────────────────────────────────────────────
 
   - type: verify
     name: clip
@@ -63,27 +51,14 @@ stages:
     conda_env: sam3
     script: teachers/clip_verify.py
     model_path: ViT-SO400M-14-SigLIP
-    pretrained: /home/iet/iet-share/models/SiGLIP/open_clip_model.safetensors   # open_clip pretrained (см. open_clip.list_pretrained())
-    batch_size: 32                       # уменьшить до 8-16, если не хватает VRAM/RAM
-    # Добавляет в каждую детекцию поля:
-    #   clip_agrees          — bool, совпадает ли лучшая догадка CLIP с классом от детектора
-    #   clip_predicted_class — какой класс CLIP считает наиболее вероятным
-    #   clip_predicted_score — score этого класса (после softmax по классам)
-    #   clip_own_class_score — score именно того класса, что предсказал детектор
-    # Решение об отбраковке принимает qc_filter.py на следующем этапе.
+    pretrained: /home/iet/iet-share/models/SiGLIP/open_clip_model.safetensors   
+    batch_size: 32                      
 
-  # ──────────────────────────────────────────────────────────────────────────────
   # QC — финальный фильтр: раскладывает картинки на clean/ и review/
-  # ──────────────────────────────────────────────────────────────────────────────
 
   - type: qc
     name: qc_filter
     enabled: true
     conda_env: sam3
     script: qc_filter.py
-    # Читает результат после verify (с полями refine_iou, clip_agrees и т.д.)
-    # Раскладывает по папкам:
-    #   clean/   — все детекции accepted (можно сразу отдавать в convert_to_yolo_seg.py)
-    #   review/  — есть хотя бы одна needs_review или rejected (нужно глянуть глазами)
-    # Копирует маски в clean/masks/ и review/masks/ с префиксом image_stem_,
-    # чтобы convert_to_yolo_seg.py работал без изменений.
+

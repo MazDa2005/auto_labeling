@@ -3,26 +3,16 @@
 в один общий датасет.
 
 ВАЖНО: все объединяемые датасеты должны использовать ОДИНАКОВЫЙ список классов в ОДИНАКОВОМ
-порядке (одинаковый classes.json/data.yaml) — иначе class_id будут указывать на разные классы
-в разных датасетах, и разметка перепутается. Скрипт это проверяет и останавливается при
-несовпадении.
+порядке (одинаковый classes.json/data.yaml) 
 
 При совпадении имён файлов между датасетами — файл переименовывается с префиксом
-имени исходного датасета, чтобы не потерять данные (а не тихо перезаписать).
-
-Пример:
-    python merge_datasets.py \
-        --datasets dataset_batch1/ dataset_batch2/ dataset_batch3/ \
-        --output-dir dataset_merged/ \
-        --split train
+имени исходного датасета, чтобы не потерять данные 
 """
 import argparse
 import shutil
 import sys
 from pathlib import Path
-
 import yaml
-
 
 def load_names(dataset_dir: str) -> list[str]:
     data_yaml_path = Path(dataset_dir) / "data.yaml"

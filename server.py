@@ -35,7 +35,7 @@ class TaskStatus(BaseModel):
     stage: Optional[str] = None
     progress: float = 0.0
     message: str = ""
-    result: Optional[dict] = None  # Для хранения результатов бенчмарка
+    result: Optional[dict] = None  
 
 
 class ExtractFramesRequest(BaseModel):
@@ -151,12 +151,12 @@ def run_train_model(task_id: str, req: TrainModelRequest):
     """
     Фоновая задача: обучение student-модели.
     """
-    # ИСПРАВЛЕНО: было req.target_project, стало req.project
     project_dir = PROJECTS_DIR / req.project
     dataset_dir = project_dir / "dataset_yolo"
     runs_dir = project_dir / "runs"
     runs_dir.mkdir(parents=True, exist_ok=True)
     progress_file = runs_dir / f"{req.run_name}_progress.json"
+    log_file = runs_dir / f"{req.run_name}.log"
 
     TASKS[task_id].status = "running"
     TASKS[task_id].stage = "train_student"
@@ -175,31 +175,39 @@ def run_train_model(task_id: str, req: TrainModelRequest):
         "--batch", str(req.batch),
         "--device", req.device,
         "--progress-file", str(progress_file),
-        "--workers", "2",
+        "--workers", "0",
         "--plots", "false",
         "--cache", "false",
         "--patience", "50"
     ]
 
     try:
-        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        with open(log_file, "w", encoding="utf-8") as log_f:
+            proc = subprocess.Popen(
+                cmd,
+                stdout=log_f,
+                stderr=subprocess.STDOUT,
+                text=True
+            )
 
-        while proc.poll() is None:
-            if progress_file.exists():
-                try:
-                    data = json.loads(progress_file.read_text(encoding="utf-8"))
-                    TASKS[task_id].progress = data.get("progress", 0.0)
-                    TASKS[task_id].message = data.get("message", "")
-                    TASKS[task_id].stage = data.get("stage", "train")
-                except (json.JSONDecodeError, OSError):
-                    pass
-            time.sleep(3)
-
-        stdout_tail = (proc.stdout.read() or "") if proc.stdout else ""
+            while proc.poll() is None:
+                if progress_file.exists():
+                    try:
+                        data = json.loads(progress_file.read_text(encoding="utf-8"))
+                        TASKS[task_id].progress = data.get("progress", 0.0)
+                        TASKS[task_id].message = data.get("message", "")
+                        TASKS[task_id].stage = data.get("stage", "train")
+                    except (json.JSONDecodeError, OSError):
+                        pass
+                time.sleep(3)
 
         if proc.returncode != 0:
             TASKS[task_id].status = "failed"
-            TASKS[task_id].message = f"Ошибка обучения: {stdout_tail[-500:]}"
+            try:
+                log_tail = log_file.read_text(encoding="utf-8")[-1000:]
+                TASKS[task_id].message = f"Ошибка обучения: {log_tail}"
+            except Exception:
+                TASKS[task_id].message = f"Ошибка обучения (код {proc.returncode})"
         else:
             TASKS[task_id].status = "done"
             TASKS[task_id].progress = 1.0
@@ -277,7 +285,7 @@ def run_benchmark_task(task_id: str, req: BenchmarkRequest):
         TASKS[task_id].message = str(e)
 
 
-# ── Эндпоинты ──────────────────────────────────────────────────────────────
+#  Эндпоинты 
 
 @app.post("/extract-frames", response_model=TaskStatus)
 async def extract_frames(req: ExtractFramesRequest, background_tasks: BackgroundTasks):

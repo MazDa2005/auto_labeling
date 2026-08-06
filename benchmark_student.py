@@ -27,9 +27,6 @@ from pathlib import Path
 
 from ultralytics import YOLO
 
-
-# ── Качество ──────────────────────────────────────────────────────────────
-
 def benchmark_quality(weights: str, data_yaml: str, imgsz: int, device: str) -> dict:
     model = YOLO(weights)
     metrics = model.val(data=data_yaml, imgsz=imgsz, device=device, verbose=False, plots=False)
@@ -58,8 +55,6 @@ def benchmark_quality(weights: str, data_yaml: str, imgsz: int, device: str) -> 
     }
     return {"overall": overall, "per_class": per_class}
 
-
-# ── Скорость ──────────────────────────────────────────────────────────────
 
 def _stream_worker(weights: str, sample_images: list[str], imgsz: int, device: str,
                     duration: float, conf: float, result_queue: mp.Queue) -> None:
@@ -179,8 +174,5 @@ def main():
 
 
 if __name__ == "__main__":
-    # multiprocessing на некоторых платформах требует явного 'spawn' —
-    # особенно важно внутри conda-окружений с CUDA (fork может сломать
-    # CUDA-контекст в дочернем процессе)
     mp.set_start_method("spawn", force=True)
     main()

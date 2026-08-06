@@ -14,7 +14,7 @@ def load_class_colors(classes_file: str) -> dict[str, tuple[int, int, int]]:
         data = json.load(f)
     colors = {}
     for c in data["classes"]:
-        hex_color = c.get("color", "#808080").lstrip("#")
+        hex_color = c.get("color", "#6E2929").lstrip("#")
         if len(hex_color) == 6:
             r, g, b = int(hex_color[0:2], 16), int(hex_color[2:4], 16), int(hex_color[4:6], 16)
             colors[c["name"]] = (b, g, r)  # BGR для OpenCV
@@ -70,7 +70,7 @@ def run_on_video(model: YOLO, video_path: str, out_path: str, class_colors: dict
     if h % 2 != 0:
         h += 1
     
-    print(f"📹 Видео: {w}x{h}, FPS={fps}")
+    print(f"Видео: {w}x{h}, FPS={fps}")
 
     Path(out_path).parent.mkdir(parents=True, exist_ok=True)
 
@@ -85,7 +85,7 @@ def run_on_video(model: YOLO, video_path: str, out_path: str, class_colors: dict
         if not writer.isOpened():
             raise RuntimeError(f"Не удалось инициализировать VideoWriter для {out_path}")
         out_path = out_path_xvid
-        print(f"✅ Использую XVID, выход: {out_path}")
+        print(f"Использую XVID, выход: {out_path}")
 
     frame_times = []
     frame_idx = 0

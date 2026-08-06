@@ -5,7 +5,6 @@ from transformers import AutoModel, AutoTokenizer, AutoProcessor
 
 class LocateAnythingWorker:
     """Stateful worker that loads the model once and serves perception queries."""
-
     def __init__(self, model_path: str, device: str = "cuda", dtype=torch.bfloat16):
         self.device = device
         self.dtype = dtype

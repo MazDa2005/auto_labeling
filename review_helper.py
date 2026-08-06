@@ -82,11 +82,8 @@ def process_image(json_path: Path, ann_dir: Path):
     else:
         print(f"[WARN] нет {annotated_path.name}")
 
-    print(f"\n{'='*70}")
-    print(f"📷 {stem} ({len(detections)} детекций)")
-    print(f"{'='*70}")
+    print(f"{stem} ({len(detections)} детекций)")
 
-    # Собираем индексы проблемных детекций (needs_review + rejected)
     needs_review_indices = []
     rejected_indices = []
 
@@ -109,10 +106,10 @@ def process_image(json_path: Path, ann_dir: Path):
     problem_indices = needs_review_indices + rejected_indices
 
     if not problem_indices:
-        print("\n✨ Все детекции уже accepted, ничего не нужно делать.")
+        print("\n Все детекции уже accepted, ничего не нужно делать.")
         return
 
-    print(f"\n🔍 Нужно решить по {len(problem_indices)} детекциям "
+    print(f"\nНужно решить по {len(problem_indices)} детекциям "
           f"(⚠️ {len(needs_review_indices)} на проверке, ❌ {len(rejected_indices)} отклонённых):")
     print("   [A]ccept — принять (зелёная рамка)")
     print("   [R]eject — отклонить (красная рамка, маска удалится)")
@@ -149,7 +146,7 @@ def process_image(json_path: Path, ann_dir: Path):
                 print(f"    → ❌ rejected")
                 break
             elif choice in ("s", "skip"):
-                print(f"    → ⏭️  пропущено (осталось {current_bucket})")
+                print(f"    →   пропущено (осталось {current_bucket})")
                 break
             else:
                 print("    Неверный ввод, попробуйте снова.")
@@ -172,7 +169,6 @@ def process_image(json_path: Path, ann_dir: Path):
                     except OSError as e:
                         print(f"    [WARN] не удалось удалить маску: {e}")
 
-    # Перерисовываем _annotated.jpg с новыми цветами рамок
     image_path = data.get("image")
     if image_path:
         # Ищем картинку с fallback (абсолютный/относительный путь)
@@ -184,13 +180,13 @@ def process_image(json_path: Path, ann_dir: Path):
 
         if image_file.exists():
             draw_qc_annotated(str(image_file), detections, str(annotated_path))
-            print(f"    🎨 Перерисован {annotated_path.name}")
+            print(f"Перерисован {annotated_path.name}")
 
     # Определяем, куда перенести картинку
     final_bucket = classify_final(detections)
 
     if final_bucket == "clean":
-        print(f"\n📦 Переношу {stem} в clean/")
+        print(f"\n Переношу {stem} в clean/")
         move_image_data(stem, "review", "clean", ann_dir)
 
         # Обновляем mask_path в JSON после переноса
@@ -203,7 +199,7 @@ def process_image(json_path: Path, ann_dir: Path):
                 json.dump(new_data, f, indent=2, ensure_ascii=False)
     else:
         remaining = sum(1 for d in detections if d.get("qc_bucket") == "needs_review")
-        print(f"\n⏸️  Оставляю {stem} в review/ (осталось {remaining} needs_review)")
+        print(f"\nОставляю {stem} в review/ (осталось {remaining} needs_review)")
 
 
 def main():
@@ -228,10 +224,10 @@ def main():
     else:
         json_files = sorted(review_dir.glob("*.json"))
         if not json_files:
-            print("🎉 Папка review/ пуста — все картинки уже в clean/")
+            print(" Папка review/ пуста — все картинки уже в clean/")
             return
 
-        print(f"📋 Найдено {len(json_files)} картинок для проверки в review/")
+        print(f"Найдено {len(json_files)} картинок для проверки в review/")
         for json_path in json_files:
             process_image(json_path, ann_dir)
 
@@ -239,7 +235,7 @@ def main():
         remaining = len(list(review_dir.glob("*.json")))
         clean_count = len(list((ann_dir / "clean").glob("*.json")))
         print(f"\n{'='*70}")
-        print(f"✅ Готово! clean: {clean_count}, review: {remaining}")
+        print(f"Готово! clean: {clean_count}, review: {remaining}")
         print(f"{'='*70}")
 
 

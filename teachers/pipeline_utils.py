@@ -16,6 +16,7 @@ def list_images(images_dir: str) -> list[Path]:
 
 
 def iou(box_a, box_b) -> float:
+    """Проверяет насколько боксы совпадают"""
     xa1, ya1, xa2, ya2 = box_a
     xb1, yb1, xb2, yb2 = box_b
     inter_x1, inter_y1 = max(xa1, xb1), max(ya1, yb1)
@@ -29,6 +30,7 @@ def iou(box_a, box_b) -> float:
 
 
 def merge_new_detections(existing: list[dict], new: list[dict], iou_threshold: float = 0.5) -> list[dict]:
+    """Проверяет на дубликаты детекции разных моделей"""
     merged = list(existing)
     for d in new:
         is_dup = any(
@@ -51,9 +53,6 @@ def save_mask_png(mask, out_path: str):
     Path(out_path).parent.mkdir(parents=True, exist_ok=True)
     binary = (mask > 0.5).astype(np.uint8) * 255
     Image.fromarray(binary, mode="L").save(out_path)
-
-
-# Работа с classes.json — единый источник промптов для всех моделей 
 
 def load_classes_with_prompts(classes_file: str = "classes.json") -> list[dict]:
     """Читает classes.json целиком, возвращает список классов (отсортирован по index)."""

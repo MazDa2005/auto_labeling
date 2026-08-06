@@ -3,9 +3,7 @@
 (модель грузится один раз внутри teacher-скрипта, не при каждой картинке).
 
 Порядок: detect -> refine -> verify -> [qc].
-После QC (если включен) результаты раскладываются по clean/ и review/ для ручного ревью.
-После ручного ревью запускается convert_to_yolo_seg.py для подготовки датасета.
-
+После QC результаты раскладываются по clean/ и review/ для ручного ревью.
 Пример:
     python batch_label.py --images-dir frames/ --config pipeline_config.yaml --out-dir annotations/
 """
@@ -82,7 +80,7 @@ def save_annotated_image(image_path: str, detections: list[dict], out_path: str,
     masks_drawn = 0
     masks_missing = 0
 
-    # ── 1. Полупрозрачные МАСКИ (цвет из classes.json) ──
+    # 1. Полупрозрачные МАСКИ (цвет из classes.json) 
     for det in detections:
         mask_path = det.get("mask_path")
         if not mask_path:
@@ -97,7 +95,7 @@ def save_annotated_image(image_path: str, detections: list[dict], out_path: str,
         threshold = 127 if mask_np.max() > 1 else 0
         mask_array = mask_np > threshold
         colored = np.zeros((*mask_array.shape, 4), dtype=np.uint8)
-        colored[mask_array] = (*rgb, 70)  # альфа 70 — полупрозрачность
+        colored[mask_array] = (*rgb, 60) 
         overlay = Image.alpha_composite(overlay, Image.fromarray(colored, mode="RGBA"))
         masks_drawn += 1
 
@@ -107,16 +105,14 @@ def save_annotated_image(image_path: str, detections: list[dict], out_path: str,
     img = Image.alpha_composite(img.convert("RGBA"), overlay).convert("RGB")
     draw = ImageDraw.Draw(img)
 
-    # ── 2. Боксы и подписи ──
+    #  2. Боксы и подписи 
     for det in detections:
         cls = det["class"]
         x1, y1, x2, y2 = det["bbox"]
         rgb = class_colors.get(cls, default_color)
 
-        # Рамка
         draw.rectangle([x1, y1, x2, y2], outline=rgb, width=3)
 
-        # Подпись: класс + confidence
         label = cls
         if det.get("confidence") is not None:
             label += f" {det['confidence']:.2f}"
@@ -127,7 +123,6 @@ def save_annotated_image(image_path: str, detections: list[dict], out_path: str,
         except AttributeError:
             tw, th = len(label) * 7, 12
 
-        # Фон подписи — затемнённый цвет класса
         bg_color = tuple(max(0, c - 60) for c in rgb)
         ty = max(0, y1 - th - 6)
         draw.rectangle([x1, ty, x1 + tw + 6, ty + th + 4], fill=bg_color)
@@ -180,7 +175,6 @@ def main():
         run_stage_batch(stage, args.images_dir, stage_dir, extra_args)
         per_stage_dirs.append(stage_dir)
 
-    # Слияние детекций всех detect-этапов по каждой картинке (dedup по IoU)
     for image_path in images:
         merged = []
         for stage_dir in per_stage_dirs:
@@ -234,15 +228,11 @@ def main():
             print(f"[WARN] {qc_stage['name']} завершился с ошибкой (код {result.returncode})", file=sys.stderr)
             sys.exit(1)
 
-        # QC раскладывает результаты по clean/ и review/ — дальше идет ручное ревью
-        print(f"\n✅ QC-фильтр завершил работу.")
-        print(f"📂 Проверенные детекции: {out_dir / 'clean'}")
-        print(f"📂 Требуют ручного просмотра: {out_dir / 'review'}")
-        print("👉 После ручного ревью запустите convert_to_yolo_seg.py для подготовки датасета.")
+        print(f"\n QC-фильтр завершил работу.")
         return
 
     # 5. Финальная сборка (если QC выключен)
-    print(f"\n📦 Финальная сборка (без QC-фильтра)")
+    print(f"\n Финальная сборка (без QC-фильтра)")
     summary = []
     for image_path in images:
         result_path = current_dir / f"{image_path.stem}.json"
@@ -279,8 +269,7 @@ def main():
 
     with open(out_dir / "_batch_summary.json", "w", encoding="utf-8") as f:
         json.dump(summary, f, indent=2, ensure_ascii=False)
-    print(f"\n✅ Готово. Результаты в {out_dir}")
-    print("👉 Запустите convert_to_yolo_seg.py для подготовки датасета.")
+    print(f"\n Готово. Результаты в {out_dir}")
 
 
 if __name__ == "__main__":

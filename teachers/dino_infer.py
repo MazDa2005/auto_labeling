@@ -17,7 +17,7 @@ from transformers import AutoProcessor, AutoModelForZeroShotObjectDetection
 from pipeline_utils import list_images, get_primary_prompts, build_reverse_prompt_lookup,iou
 
 def dedup_overlapping(detections: list[dict], iou_threshold: float = 0.6) -> list[dict]:
-    """Убирает дубликаты боксов одного класса — DINO не делает NMS между query-предложениями."""
+    """Убирает дубликаты боксов одного класса"""
     detections = sorted(detections, key=lambda d: d.get("confidence") or 0, reverse=True)
     kept = []
     for d in detections:
@@ -49,7 +49,6 @@ def load_prompts_with_fallback(classes: list[str], classes_file: str) -> dict[st
 def build_query(classes: list[str], classes_file: str) -> str:
     """
     Строит текстовый запрос для Grounding DINO из промптов в classes.json.
-    Формат: "a person. a safety helmet. work gloves."
     """
     prompts = load_prompts_with_fallback(classes, classes_file)
     selected = [prompts[c] for c in classes if c in prompts]
@@ -59,7 +58,6 @@ def build_query(classes: list[str], classes_file: str) -> str:
 def build_label_lookup(classes: list[str], classes_file: str) -> dict[str, str]:
     """
     Обратное сопоставление: промпт (lowercase) -> каноническое имя класса.
-    Использует build_reverse_prompt_lookup из pipeline_utils, если в classes.json есть промпты.
     """
     try:
         lookup = build_reverse_prompt_lookup(classes_file)
@@ -74,6 +72,7 @@ def build_label_lookup(classes: list[str], classes_file: str) -> dict[str, str]:
 def process_image(model, processor, device, image_path: Path, classes: list[str],
                    classes_file: str,
                    box_threshold: float = 0.45, text_threshold: float = 0.35) -> list[dict]:
+    """Обрабатывает изображения"""
     img = Image.open(image_path).convert("RGB")
     query = build_query(classes, classes_file)
     label_lookup = build_label_lookup(classes, classes_file)

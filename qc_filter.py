@@ -246,7 +246,6 @@ def draw_qc_annotated(image_path: str, detections: list[dict], out_path: str,
     masks_drawn = 0
     masks_missing = 0
 
-    # ── 1. Полупрозрачные МАСКИ (цвет из classes.json) ──
     for det in detections:
         mask_path = det.get("mask_path")
         if not mask_path:
@@ -272,7 +271,6 @@ def draw_qc_annotated(image_path: str, detections: list[dict], out_path: str,
     img = Image.alpha_composite(img.convert("RGBA"), overlay).convert("RGB")
     draw = ImageDraw.Draw(img)
 
-    # ─ 2. Боксы, номера и подписи (цвет — по статусу QC: A / needs_review / rejected) ──
     for idx, det in enumerate(detections):
         bucket = det["qc_bucket"]
         cls = det["class"]

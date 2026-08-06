@@ -49,7 +49,6 @@ def load_prompts_with_fallback(classes: list[str], classes_file: str) -> dict[st
 def build_label_lookup(classes: list[str], classes_file: str) -> dict[str, str]:
     """
     Обратное сопоставление: промпт (lowercase) -> каноническое имя класса.
-    Использует build_reverse_prompt_lookup из pipeline_utils, если в classes.json есть промпты.
     """
     try:
         lookup = build_reverse_prompt_lookup(classes_file)
@@ -62,6 +61,7 @@ def build_label_lookup(classes: list[str], classes_file: str) -> dict[str, str]:
 
 
 def process_image(worker, image_path: Path, classes: list[str], classes_file: str) -> list[dict]:
+    """Обрабатывает изображения"""
     img = Image.open(image_path).convert("RGB")
 
     prompts = load_prompts_with_fallback(classes, classes_file)

@@ -17,8 +17,7 @@ import requests
 import streamlit as st
 import uvicorn
 import yaml
-import pandas as pd  # <-- ДОБАВЛЕНО для таблиц бенчмарка
-
+import pandas as pd  
 from server import app as fastapi_app
 
 st.set_page_config(page_title="Auto-Labeling", layout="wide", page_icon="🔍")
@@ -60,7 +59,8 @@ def start_backend() -> bool:
 
 start_backend()
 
-# ── Вспомогательные функции ────────────────────────────────────────────────
+# Вспомогательные функции 
+
 def api_post(endpoint: str, data: dict) -> dict:
     """Отправить POST запрос к API."""
     try:
@@ -68,7 +68,7 @@ def api_post(endpoint: str, data: dict) -> dict:
         response.raise_for_status()
         return response.json()
     except requests.exceptions.ConnectionError:
-        st.error(" Не удалось подключиться к API серверу. Запустите: `python server.py`")
+        st.error("Не удалось подключиться к API серверу. Запустите: `python server.py`")
         st.stop()
     except requests.exceptions.HTTPError as e:
         st.error(f"HTTP ошибка: {e}")
@@ -82,7 +82,7 @@ def api_get(endpoint: str) -> dict:
         response.raise_for_status()
         return response.json()
     except requests.exceptions.ConnectionError:
-        st.error("❌ Не удалось подключиться к API серверу.")
+        st.error("Не удалось подключиться к API серверу.")
         st.stop()
 
 
@@ -234,7 +234,7 @@ def has_yolo_dataset(project: str) -> bool:
     return train_images is not None
 
 
-# ── Загрузка цветов классов ──────────────────────────────────────────────────
+# Загрузка цветов классов
 def load_class_colors() -> dict[str, str]:
     """Загрузить цвета классов из classes.json."""
     if not Path("classes.json").exists():
@@ -261,8 +261,8 @@ PAGE_SPOTCHECK = "Spot Check"
 PAGE_CONVERT = "Конвертация"
 PAGE_MERGE = "Объединение датасетов"
 PAGE_TRAIN = " Обучение"
-PAGE_TEST = "🧪 Тест модели"
-PAGE_BENCHMARK = "📊 Бенчмарк"  # <-- ДОБАВЛЕНО
+PAGE_TEST = "Тест модели"
+PAGE_BENCHMARK = "Бенчмарк"  # 
 
 st.sidebar.title("Auto-Labeling")
 page = st.sidebar.radio(
@@ -293,11 +293,11 @@ if page == PAGE_HOME:
     projects = get_projects()
 
     if projects:
-        st.success(f"✅ Найдено проектов: {len(projects)}")
+        st.success(f"Найдено проектов: {len(projects)}")
         for proj in projects:
             st.markdown(f"- **{proj}**")
     else:
-        st.warning("⚠️ Нет проектов. Создайте новый, загрузив видео!")
+        st.warning("Нет проектов. Создайте новый, загрузив видео!")
     st.caption(" Убедитесь, что FastAPI сервер запущен: `python server.py`")
 
 elif page == PAGE_UPLOAD:
@@ -314,7 +314,7 @@ elif page == PAGE_UPLOAD:
         if uploaded_file:
             st.info(f" Загружен файл: {uploaded_file.name}")
 
-            if st.button("💾 Сохранить видео"):
+            if st.button("Сохранить видео"):
                 if not project_dir.exists():
                     project_dir.mkdir(parents=True)
                     (project_dir / "frames").mkdir()
@@ -334,9 +334,9 @@ elif page == PAGE_UPLOAD:
         )
 
         if uploaded_files:
-            st.info(f"📷 Загружено файлов: {len(uploaded_files)}")
+            st.info(f"Загружено файлов: {len(uploaded_files)}")
 
-            if st.button("💾 Сохранить изображения"):
+            if st.button("Сохранить изображения"):
                 if not project_dir.exists():
                     project_dir.mkdir(parents=True)
                     (project_dir / "images").mkdir()
@@ -351,11 +351,11 @@ elif page == PAGE_UPLOAD:
                 st.image(str(images_dir / uploaded_files[0].name), caption="Пример изображения")
 
 elif page == PAGE_EXTRACT:
-    st.title("🎬 Извлечение кадров из видео")
+    st.title("Извлечение кадров из видео")
 
     projects = get_projects()
     if not projects:
-        st.warning("️ Нет проектов. Создайте проект на вкладке 'Загрузка'.")
+        st.warning("️Нет проектов. Создайте проект на вкладке 'Загрузка'.")
         st.stop()
 
     selected_project = st.selectbox("Выберите проект", projects)
@@ -368,7 +368,7 @@ elif page == PAGE_EXTRACT:
 
     fps = st.slider("Кадров в секунду", 1, 30, 5)
 
-    if st.button("🎬 Извлечь кадры", width="stretch"):
+    if st.button("Извлечь кадры", width="stretch"):
         with st.spinner("Извлечение кадров..."):
             result = api_post("/extract-frames", {"project": selected_project, "fps": fps})
 
@@ -394,11 +394,11 @@ elif page == PAGE_EXTRACT:
                     st.error(f" Ошибка: {status.get('message')}")
 
 elif page == PAGE_PIPELINE:
-    st.title("️ Запуск пайплайна детекции")
+    st.title("️Запуск пайплайна детекции")
 
     projects = get_projects()
     if not projects:
-        st.warning("⚠️ Нет проектов.")
+        st.warning("Нет проектов.")
         st.stop()
 
     selected_project = st.selectbox("Выберите проект", projects)
@@ -411,7 +411,7 @@ elif page == PAGE_PIPELINE:
 
     with open("classes.json", "r", encoding="utf-8") as f:
         classes_data = json.load(f)
-    # Исправление пробелов в ключах
+
     classes_list = classes_data.get("classes", classes_data.get("classes ", []))
     class_names = [c.get("name", c.get("name ", "")).strip() for c in classes_list]
 
@@ -440,7 +440,7 @@ elif page == PAGE_PIPELINE:
         else:
             st.success(f"Выбраны все {len(class_names)} классов")
 
-    if st.button("⚙️ Запустить пайплайн", width="stretch", disabled=not selected_classes):
+    if st.button("Запустить пайплайн", width="stretch", disabled=not selected_classes):
         with st.spinner("Запуск пайплайна..."):
             result = api_post("/run-pipeline", {"project": selected_project, "classes": selected_classes})
 
@@ -466,11 +466,11 @@ elif page == PAGE_PIPELINE:
                     st.error(f"❌ Ошибка: {status.get('message')}")
 
 elif page == PAGE_REVIEW:
-    st.title("🔍 Ручная проверка детекций")
+    st.title("Ручная проверка детекций")
 
     projects = get_projects()
     if not projects:
-        st.warning("⚠️ Нет проектов.")
+        st.warning("Нет проектов.")
         st.stop()
 
     selected_project = st.selectbox("Выберите проект", projects)
@@ -479,7 +479,7 @@ elif page == PAGE_REVIEW:
     stats = get_project_stats(selected_project)
 
     st.sidebar.markdown("---")
-    st.sidebar.subheader("📊 Статистика проекта")
+    st.sidebar.subheader("Статистика проекта")
 
     if stats["total_images"] > 0:
         progress = stats["clean_count"] / stats["total_images"]
@@ -497,7 +497,7 @@ elif page == PAGE_REVIEW:
     json_files = get_review_files(selected_project)
 
     if not json_files:
-        st.success("🎉 Все детекции проверены!")
+        st.success("Все детекции проверены!")
         st.stop()
 
     if "review_index" not in st.session_state:
@@ -513,10 +513,10 @@ elif page == PAGE_REVIEW:
         data = json.load(f)
     detections = data.get("detections", [])
 
-    # Переключатель: аннотированная картинка (с масками/боксами) vs оригинал.
+
     view_mode = st.radio(
         "Показать",
-        ["🖍️ Аннотированная", "🖼️ Оригинал"],
+        ["Аннотированная", "Оригинал"],
         horizontal=True,
         key="review_view_mode",
     )
@@ -575,7 +575,7 @@ elif page == PAGE_REVIEW:
                     emoji = "❌"
                     conf_color = "red"
 
-                cls_color = CLASS_COLORS.get(cls, "#808080")
+                cls_color = CLASS_COLORS.get(cls, "#996161")
 
                 info_col, accept_col, reject_col = st.columns([4, 1, 1])
 
@@ -641,162 +641,266 @@ elif page == PAGE_REVIEW:
             st.rerun()
 
 elif page == PAGE_SPOTCHECK:
-    st.title(" Spot Check — быстрая проверка")
-
+    st.title("🎲 Spot Check — контроль качества пайплайна")
+ 
     st.markdown("""
-    **Spot Check** — режим для быстрой проверки случайных кадров из review.
-    Идеально подходит для первичной оценки качества детекций.
+    **Spot Check** — проверка случайных кадров из `clean/` для контроля качества пайплайна.
+    Цель: убедиться, что детектор и QC-фильтр правильно отработали. 
+    Если найдена ошибка — кадр возвращается в `review/` для исправления.
     """)
-
-    projects = get_projects()
-    if not projects:
-        st.warning("️ Нет проектов.")
-        st.stop()
-
-    selected_project = st.selectbox("Выберите проект", projects)
-    project_dir = PROJECTS_DIR / selected_project
-
-    json_files = get_review_files(selected_project)
-
-    if not json_files:
-        st.success(" Все детекции проверены! Нечего проверять.")
-        st.stop()
-
-    col1, col2, col3 = st.columns([1, 2, 1])
-
-    with col2:
-        if st.button("🎲 Случайный кадр", use_container_width=True, type="primary"):
-            st.session_state.spotcheck_file = random.choice(json_files)
-            st.session_state.spotcheck_active = True
-
-    if "spotcheck_active" in st.session_state and st.session_state.spotcheck_active:
-        current_file = st.session_state.spotcheck_file
-        stem = current_file.stem
-
-        with open(current_file, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        detections = data.get("detections", [])
-
-        view_mode = st.radio(
-            "Показать",
-            ["️ Аннотированная", "️ Оригинал"],
-            horizontal=True,
-            key="spotcheck_view_mode",
-        )
-
-        if view_mode == "🖍️ Аннотированная":
-            image_path = find_annotated_image(stem, selected_project) or find_original_image(stem, selected_project)
-        else:
-            image_path = find_original_image(stem, selected_project) or find_annotated_image(stem, selected_project)
-
-        col_img, col_det = st.columns([1.5, 1])
-
-        with col_img:
-            if image_path:
-                st.image(str(image_path), width="stretch")
-                st.caption(f"📷 {stem}")
-            else:
-                st.error("❌ Картинка не найдена!")
-
-        def _write_spotcheck_annotations():
-            with open(current_file, "w", encoding="utf-8") as f:
-                json.dump(data, f, indent=2, ensure_ascii=False)
-
-        def _accept_spotcheck(det_idx: int):
-            detections[det_idx]["qc_bucket"] = "accepted"
-            detections[det_idx]["qc_reason"] = "принята в spot check"
-            _write_spotcheck_annotations()
-            st.rerun()
-
-        def _reject_spotcheck(det_idx: int):
-            det = detections[det_idx]
-            det["qc_bucket"] = "rejected"
-            det["qc_reason"] = "отклонена в spot check"
-            mask_path = det.get("mask_path")
-            if mask_path and Path(mask_path).exists():
-                Path(mask_path).unlink()
-            _write_spotcheck_annotations()
-            st.rerun()
-
-        DETECTIONS_PANEL_HEIGHT = 400
-
-        with col_det:
-            st.subheader(" Детекции")
-
-            with st.container(height=DETECTIONS_PANEL_HEIGHT, border=True):
-                for idx, det in enumerate(detections):
-                    bucket = det.get("qc_bucket", "accepted")
-                    cls = det["class"]
-                    conf = det.get("confidence", 0)
-
-                    if bucket == "accepted":
-                        emoji = "✅"
-                        conf_color = "green"
-                    elif bucket == "needs_review":
-                        emoji = "⚠️"
-                        conf_color = "orange"
-                    else:
-                        emoji = ""
-                        conf_color = "red"
-
-                    cls_color = CLASS_COLORS.get(cls, "#808080")
-
-                    info_col, accept_col, reject_col = st.columns([4, 1, 1])
-
-                    with info_col:
-                        st.markdown(f"**{emoji} [{idx}] {cls}**")
-                        st.markdown(f":{conf_color}[{conf:.2f}]")
-                        st.markdown(
-                            f"<div style='width:24px;height:24px;background:{cls_color};border:2px solid #333;border-radius:3px;display:inline-block;margin:2px 0'></div>",
-                            unsafe_allow_html=True,
-                        )
-
-                    with accept_col:
-                        st.button("✅", key=f"spot_accept_{stem}_{idx}",
-                                 disabled=bucket == "accepted",
-                                 on_click=_accept_spotcheck, args=(idx,))
-
-                    with reject_col:
-                        st.button("❌", key=f"spot_reject_{stem}_{idx}",
-                                 disabled=bucket == "rejected",
-                                 on_click=_reject_spotcheck, args=(idx,))
-
-                    st.divider()
-
-            st.markdown("---")
-            col_btn1, col_btn2 = st.columns(2)
-
-            with col_btn1:
-                if st.button("🎲 Ещё случайный", use_container_width=True):
-                    st.session_state.spotcheck_file = random.choice(json_files)
-                    st.rerun()
-
-            with col_btn2:
-                if st.button("🔍 В полный review", use_container_width=True):
-                    try:
-                        idx = json_files.index(current_file)
-                        st.session_state.review_index = idx
-                    except ValueError:
-                        st.session_state.review_index = 0
-                    st.session_state.spotcheck_active = False
-                    st.rerun()
-
-        accepted = sum(1 for d in detections if d.get("qc_bucket") == "accepted")
-        review = sum(1 for d in detections if d.get("qc_bucket") == "needs_review")
-        rejected = sum(1 for d in detections if d.get("qc_bucket") == "rejected")
-
-        st.markdown(f"**Детекций:** ✅ {accepted} | ⚠️ {review} | ❌ {rejected}")
-
-    else:
-        st.info(" Нажмите **'🎲 Случайный кадр'**, чтобы начать проверку")
-        st.markdown(f"**Всего кадров в review:** {len(json_files)}")
-
-elif page == PAGE_CONVERT:
-    st.title("📦 Конвертация в YOLO формат")
-
+ 
     projects = get_projects()
     if not projects:
         st.warning("⚠️ Нет проектов.")
+        st.stop()
+ 
+    selected_project = st.selectbox("Выберите проект", projects)
+    project_dir = PROJECTS_DIR / selected_project
+ 
+    # Работаем с clean/, а не с review/
+    clean_dir = project_dir / "ann" / "clean"
+    review_dir = project_dir / "ann" / "review"
+ 
+    if not clean_dir.exists():
+        st.warning("⚠️ Папка clean/ не найдена. Сначала запустите пайплайн и QC-фильтр.")
+        st.stop()
+ 
+    clean_files = sorted([f for f in clean_dir.glob("*.json") if not f.name.startswith("_")])
+ 
+    if not clean_files:
+        st.info("⚠️ В clean/ нет файлов для проверки.")
+        st.stop()
+ 
+    col_sample, col_count = st.columns([2, 1])
+    with col_sample:
+        sample_percent = st.slider(
+            "Размер выборки (% от всех файлов)",
+            min_value=5,
+            max_value=100,
+            value=20,
+            step=5,
+            format="%d%%",
+        )
+        sample_size = max(1, int(len(clean_files) * sample_percent / 100))
+        st.caption(f"🎯 Это **{sample_size}** кадров из {len(clean_files)}")
+ 
+    with col_count:
+        st.metric("Всего в clean/", len(clean_files))
+ 
+    # Инициализация сессии
+    if "spotcheck_files" not in st.session_state or st.session_state.get("spotcheck_project") != selected_project:
+        st.session_state.spotcheck_files = random.sample(clean_files, min(sample_size, len(clean_files)))
+        st.session_state.spotcheck_index = 0
+        st.session_state.spotcheck_project = selected_project
+        st.session_state.spotcheck_ok = 0
+        st.session_state.spotcheck_errors = 0
+        st.session_state.spotcheck_active = False
+ 
+    # Кнопка запуска
+    if not st.session_state.spotcheck_active:
+        if st.button("Начать Spot Check", width="stretch", type="primary"):
+            st.session_state.spotcheck_files = random.sample(clean_files, min(sample_size, len(clean_files)))
+            st.session_state.spotcheck_index = 0
+            st.session_state.spotcheck_ok = 0
+            st.session_state.spotcheck_errors = 0
+            st.session_state.spotcheck_active = True
+            st.rerun()
+    else:
+        # Статистика проверки в сайдбаре
+        total_checked = st.session_state.spotcheck_ok + st.session_state.spotcheck_errors
+        st.sidebar.markdown("---")
+        st.sidebar.subheader("📊 Прогресс Spot Check")
+        st.sidebar.metric("Проверено", total_checked)
+        st.sidebar.metric("✅ ОК", st.session_state.spotcheck_ok)
+        st.sidebar.metric("❌ Ошибок", st.session_state.spotcheck_errors)
+        if total_checked > 0:
+            quality = st.session_state.spotcheck_ok / total_checked * 100
+            st.sidebar.metric("Качество", f"{quality:.0f}%")
+ 
+        # Текущий файл для проверки
+        if st.session_state.spotcheck_index < len(st.session_state.spotcheck_files):
+            current_file = st.session_state.spotcheck_files[st.session_state.spotcheck_index]
+            stem = current_file.stem
+ 
+            with open(current_file, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            detections = data.get("detections", [])
+ 
+            # Переключатель вида (из старого UI)
+            view_mode = st.radio(
+                "Показать",
+                ["🖍️ Аннотированная", "🖼️ Оригинал"],
+                horizontal=True,
+                key="spotcheck_view_mode",
+            )
+ 
+            if view_mode == "🖍️ Аннотированная":
+                image_path = clean_dir / f"{stem}_annotated.jpg"
+                if not image_path.exists():
+                    image_path = find_original_image(stem, selected_project)
+            else:
+                image_path = find_original_image(stem, selected_project)
+ 
+            col_img, col_det = st.columns([1.5, 1])
+ 
+            with col_img:
+                if image_path and image_path.exists():
+                    st.image(str(image_path), width="stretch")
+                    st.caption(f"{stem}")
+                else:
+                    st.error("❌ Картинка не найдена!")
+ 
+            # Функция для сохранения изменений в детекциях (микро-правки во время spot check)
+            def _write_spotcheck_annotations():
+                with open(current_file, "w", encoding="utf-8") as f:
+                    json.dump(data, f, indent=2, ensure_ascii=False)
+
+            def _accept_det(det_idx: int):
+                detections[det_idx]["qc_bucket"] = "accepted"
+                detections[det_idx]["qc_reason"] = "принята в spot check"
+                _write_spotcheck_annotations()
+                st.rerun()
+
+            def _reject_det(det_idx: int):
+                det = detections[det_idx]
+                det["qc_bucket"] = "rejected"
+                det["qc_reason"] = "отклонена в spot check"
+                mask_path = det.get("mask_path")
+                if mask_path and Path(mask_path).exists():
+                    Path(mask_path).unlink()
+                _write_spotcheck_annotations()
+                st.rerun()
+ 
+            with col_det:
+                st.subheader("Детекции")
+ 
+                with st.container(height=400, border=True):
+                    for idx, det in enumerate(detections):
+                        bucket = det.get("qc_bucket", "accepted")
+                        cls = det["class"]
+                        conf = det.get("confidence", 0)
+ 
+                        if bucket == "accepted":
+                            emoji = "✅"
+                            conf_color = "green"
+                        elif bucket == "needs_review":
+                            emoji = "⚠️"
+                            conf_color = "orange"
+                        else:
+                            emoji = "❌"
+                            conf_color = "red"
+ 
+                        cls_color = CLASS_COLORS.get(cls, "#808080")
+ 
+                        info_col, accept_col, reject_col = st.columns([4, 1, 1])
+ 
+                        with info_col:
+                            st.markdown(f"**{emoji} [{idx}] {cls}**")
+                            st.markdown(f":{conf_color}[{conf:.2f}]")
+                            st.markdown(
+                                f"<div style='width:24px;height:24px;background:{cls_color};border:2px solid #333;border-radius:3px;display:inline-block;margin:2px 0'></div>",
+                                unsafe_allow_html=True,
+                            )
+ 
+                        with accept_col:
+                            st.button("✅", key=f"spot_acc_{stem}_{idx}",
+                                     disabled=bucket == "accepted",
+                                     on_click=_accept_det, args=(idx,))
+ 
+                        with reject_col:
+                            st.button("❌", key=f"spot_rej_{stem}_{idx}",
+                                     disabled=bucket == "rejected",
+                                     on_click=_reject_det, args=(idx,))
+ 
+                        st.divider()
+ 
+                st.markdown(f"**Всего детекций:** {len(detections)}")
+ 
+            st.markdown("---")
+            st.subheader("Оценка качества пайплайна")
+            
+            # Вспомогательная функция для переноса в review
+            def _move_to_review():
+                review_dir.mkdir(parents=True, exist_ok=True)
+                (review_dir / "masks").mkdir(parents=True, exist_ok=True)
+                
+                # Перемещаем JSON
+                if current_file.exists():
+                    shutil.move(str(current_file), str(review_dir / current_file.name))
+                # Перемещаем картинку
+                ann_src = clean_dir / f"{stem}_annotated.jpg"
+                if ann_src.exists():
+                    shutil.move(str(ann_src), str(review_dir / ann_src.name))
+                # Перемещаем маски
+                src_masks = clean_dir / "masks"
+                dst_masks = review_dir / "masks"
+                if src_masks.exists():
+                    for mask in src_masks.glob(f"{stem}_*"):
+                        shutil.move(str(mask), str(dst_masks / mask.name))
+                
+                # Обновляем статус внутри файла, чтобы он попал в работу
+                review_json_path = review_dir / f"{stem}.json"
+                if review_json_path.exists():
+                    with open(review_json_path, "r", encoding="utf-8") as f:
+                        review_data = json.load(f)
+                    for det in review_data.get("detections", []):
+                        det["qc_bucket"] = "needs_review"
+                        det["qc_reason"] = "возврат из spot check: ошибка пайплайна"
+                    with open(review_json_path, "w", encoding="utf-8") as f:
+                        json.dump(review_data, f, indent=2, ensure_ascii=False)
+
+            col_btn1, col_btn2, col_btn3 = st.columns(3)
+ 
+            with col_btn1:
+                if st.button("✅ Всё корректно", use_container_width=True, type="primary"):
+                    st.session_state.spotcheck_ok += 1
+                    st.session_state.spotcheck_index += 1
+                    st.rerun()
+ 
+            with col_btn2:
+                if st.button("❌ Ошибка пайплайна", use_container_width=True):
+                    st.session_state.spotcheck_errors += 1
+                    _move_to_review()
+                    st.success(f"⚠️ {stem} возвращён в review/")
+                    st.session_state.spotcheck_index += 1
+                    st.rerun()
+ 
+            with col_btn3:
+                if st.button("В полный review", use_container_width=True):
+                    _move_to_review()
+                    st.session_state.spotcheck_active = False
+                    st.success(f"⚠️ {stem} перемещён в review/. Перейдите во вкладку 'Review' для исправления.")
+                    st.rerun()
+ 
+            st.caption(f"Кадр {st.session_state.spotcheck_index + 1} из {len(st.session_state.spotcheck_files)}")
+ 
+        else:
+            # Spot Check завершён
+            total = st.session_state.spotcheck_ok + st.session_state.spotcheck_errors
+            quality = st.session_state.spotcheck_ok / total * 100 if total > 0 else 0
+ 
+            st.success("🎉 Spot Check завершён!")
+            st.markdown(f"""
+            ### Результаты:
+            - **Проверено кадров:** {total}
+            - **✅ Корректных:** {st.session_state.spotcheck_ok}
+            - **❌ Ошибок пайплайна:** {st.session_state.spotcheck_errors}
+            - **Качество пайплайна:** {quality:.1f}%
+            """)
+ 
+            if st.session_state.spotcheck_errors > 0:
+                st.warning(f"Найдено {st.session_state.spotcheck_errors} кадров с ошибками. Они возвращены в review/ для исправления.")
+ 
+            if st.button("🔄 Начать новый Spot Check", width="stretch"):
+                st.session_state.spotcheck_active = False
+                st.rerun()
+
+elif page == PAGE_CONVERT:
+    st.title("Конвертация в YOLO формат")
+
+    projects = get_projects()
+    if not projects:
+        st.warning("Нет проектов.")
         st.stop()
 
     selected_project = st.selectbox("Выберите проект", projects)
@@ -804,10 +908,10 @@ elif page == PAGE_CONVERT:
 
     clean_dir = project_dir / "ann" / "clean"
     if not clean_dir.exists() or not list(clean_dir.glob("*.json")):
-        st.warning("⚠️ Нет данных для конвертации. Проверьте все детекции в Review.")
+        st.warning("Нет данных для конвертации. Проверьте все детекции в Review.")
         st.stop()
 
-    if st.button("📦 Конвертировать в YOLO", width="stretch"):
+    if st.button("Конвертировать в YOLO", width="stretch"):
         with st.spinner("Конвертация..."):
             result = api_post("/convert-to-yolo", {"project": selected_project})
 
@@ -851,8 +955,6 @@ elif page == PAGE_MERGE:
     st.markdown("""
     Выберите несколько проектов, у которых уже выполнена конвертация в YOLO,
     чтобы объединить их в один датасет с **честным train/val сплитом**
-    (картинки не пересекаются между train и val — в отличие от старой
-    версии, где val дублировал train).
 
     Итоговый датасет использует макет `train/images`, `train/labels`,
     `val/images`, `val/labels` (и `test/`, если задать долю test > 0).
@@ -890,16 +992,16 @@ elif page == PAGE_MERGE:
 
     ratio_ok = (val_ratio + test_ratio) < 0.9
     if not ratio_ok:
-        st.error("❌ val + test слишком большие — на train почти ничего не останется.")
+        st.error("val + test слишком большие — на train почти ничего не останется.")
 
     if new_project_name in projects:
         st.error(f" Проект с именем '{new_project_name}' уже существует! Выберите другое имя.")
         can_merge = False
     elif not new_project_name.strip():
-        st.error("❌ Имя проекта не может быть пустым.")
+        st.error("Имя проекта не может быть пустым.")
         can_merge = False
     elif len(selected_projects) < 2:
-        st.warning("️ Выберите минимум 2 проекта для объединения.")
+        st.warning("️Выберите минимум 2 проекта для объединения.")
         can_merge = False
     else:
         can_merge = ratio_ok
@@ -907,7 +1009,7 @@ elif page == PAGE_MERGE:
     if st.button(" Объединить датасеты", width="stretch", disabled=not can_merge):
         with st.spinner("Объединение датасетов... Это может занять некоторое время."):
             try:
-                # ─ 1. Собираем ВСЕ пары (картинка, лейбл) из всех сплитов каждого проекта ──
+                
                 all_pairs = []  # (image_path, label_path_or_None, project_name)
                 for proj in selected_projects:
                     src_dataset = PROJECTS_DIR / proj / "dataset_yolo"
@@ -925,8 +1027,7 @@ elif page == PAGE_MERGE:
                     st.error(" Не найдено ни одной картинки в выбранных проектах.")
                     st.stop()
 
-                # ── 2. Честный shuffle + split (train/val/test НЕ пересекаются) ──
-                random.seed(42)  # воспроизводимость между запусками
+                random.seed(42)  
                 shuffled = all_pairs.copy()
                 random.shuffle(shuffled)
 
@@ -943,7 +1044,6 @@ elif page == PAGE_MERGE:
                 if test_pairs:
                     splits["test"] = test_pairs
 
-                # ── 3. Копируем в НОВЫЙ макет: <split>/images/, <split>/labels/ ──
                 new_dataset_dir = new_project_dir / "dataset_yolo"
                 progress_bar = st.progress(0)
                 total_copied = 0
@@ -967,7 +1067,7 @@ elif page == PAGE_MERGE:
                             shutil.copy(label_path, labels_out / f"{new_stem}.txt")
                             total_labels += 1
                         else:
-                            # картинка без объектов — пустой .txt, чтобы не выпасть из датасета
+                        
                             (labels_out / f"{new_stem}.txt").touch()
 
                         if total_to_copy:
@@ -992,17 +1092,16 @@ elif page == PAGE_MERGE:
                 with open(new_dataset_dir / "data.yaml", "w", encoding="utf-8") as f:
                     yaml.dump(data_yaml, f, allow_unicode=True, sort_keys=False)
 
-                st.success(f"✅ Датасеты успешно объединены в проект: **{new_project_name}**!")
+                st.success(f" Датасеты успешно объединены в проект: **{new_project_name}**!")
                 split_summary = f"train={len(train_pairs)}, val={len(val_pairs)}"
                 if test_pairs:
                     split_summary += f", test={len(test_pairs)}"
                 st.markdown(f"""
                 **Статистика объединения:**
-                - 🖼️ Изображений скопировано: **{total_copied}** ({split_summary})
-                - 🏷️ Файлов аннотаций скопировано: **{total_labels}**
-                - 📁 Путь к новому датасету: `{new_dataset_dir}`
+                - Изображений скопировано: **{total_copied}** ({split_summary})
+                - Файлов аннотаций скопировано: **{total_labels}**
+                - Путь к новому датасету: `{new_dataset_dir}`
                 """)
-                st.caption("✅ train/val/test — честные непересекающиеся сплиты (не дублируют друг друга).")
 
                 zip_path = new_dataset_dir / f"{new_project_name}_merged.zip"
                 with st.spinner("Создание ZIP-архива..."):
@@ -1020,13 +1119,13 @@ elif page == PAGE_MERGE:
                 st.error(f" Произошла ошибка при объединении: {str(e)}")
 
 elif page == PAGE_TRAIN:
-    st.title("🎓 Обучение student-модели")
+    st.title("Обучение student-модели")
 
     projects = get_projects()
     projects_with_dataset = [p for p in projects if has_yolo_dataset(p)]
 
     if not projects_with_dataset:
-        st.warning("⚠️ Нет проектов с готовым YOLO-датасетом. Сначала пройди 'Конвертация' (или 'Объединение датасетов' для нескольких проектов).")
+        st.warning("Нет проектов с готовым YOLO-датасетом. Сначала пройди 'Конвертация' (или 'Объединение датасетов' для нескольких проектов).")
         st.stop()
 
     selected_project = st.selectbox(
@@ -1051,7 +1150,7 @@ elif page == PAGE_TRAIN:
         batch = st.number_input("Batch size", min_value=1, max_value=256, value=16)
         device = st.selectbox("Устройство", ["0", "cpu"], help="'0' — первая GPU, 'cpu' — без GPU")
 
-    if st.button("🎓 Запустить обучение", width="stretch"):
+    if st.button("Запустить обучение", width="stretch"):
         result = api_post("/train-model", {
             "project": selected_project,
             "run_name": run_name,
@@ -1070,7 +1169,7 @@ elif page == PAGE_TRAIN:
     # Прогресс обучения показываем отдельным блоком
     if "train_task_id" in st.session_state:
         st.markdown("---")
-        st.subheader(f"📊 Прогресс: {st.session_state.get('train_task_project', '')}")
+        st.subheader(f"Прогресс: {st.session_state.get('train_task_project', '')}")
 
         status = api_get(f"/task/{st.session_state['train_task_id']}")
         st.progress(min(1.0, max(0.0, status.get("progress", 0.0))))
@@ -1078,9 +1177,9 @@ elif page == PAGE_TRAIN:
 
         if status.get("status") in ("done", "failed"):
             if status.get("status") == "done":
-                st.success("✅ Обучение завершено!")
+                st.success("Обучение завершено!")
             else:
-                st.error("❌ Обучение завершилось с ошибкой")
+                st.error("Обучение завершилось с ошибкой")
             if st.button("Очистить статус"):
                 del st.session_state["train_task_id"]
                 st.session_state.pop("train_task_project", None)
@@ -1090,13 +1189,13 @@ elif page == PAGE_TRAIN:
             st.rerun()
 
 elif page == PAGE_TEST:
-    st.title("🧪 Тест обученной модели")
+    st.title("Тест обученной модели")
 
     projects = get_projects()
     projects_with_runs = [p for p in projects if (PROJECTS_DIR / p / "runs").exists()]
 
     if not projects_with_runs:
-        st.warning("️ Нет обученных моделей. Сначала обучи модель на вкладке 'Обучение'.")
+        st.warning("️Нет обученных моделей. Сначала обучи модель на вкладке 'Обучение'.")
         st.stop()
 
     selected_project = st.selectbox("Проект с обученной моделью", projects_with_runs)
@@ -1165,11 +1264,10 @@ elif page == PAGE_TEST:
                     st.error(f"❌ Ошибка: {status.get('message')}")
 
 
-# ═══════════════════════════════════════════════════════════════
-# 📊 НОВАЯ СТРАНИЦА: БЕНЧМАРК МОДЕЛИ
-# ═══════════════════════════════════════════════════════════════
+# БЕНЧМАРК МОДЕЛИ
+
 elif page == PAGE_BENCHMARK:
-    st.title("📊 Бенчмарк модели")
+    st.title("Бенчмарк модели")
     st.markdown("Оценка качества (mAP) и скорости (FPS) обученной модели.")
 
     # 1. Получаем списки с сервера
@@ -1188,12 +1286,12 @@ elif page == PAGE_BENCHMARK:
     # 2. Селекторы
     col1, col2 = st.columns(2)
     with col1:
-        selected_model = st.selectbox("🧠 Модель", options=models, format_func=lambda x: x["name"])
+        selected_model = st.selectbox("Модель", options=models, format_func=lambda x: x["name"])
     with col2:
-        selected_dataset = st.selectbox("📁 Датасет", options=datasets, format_func=lambda x: x["name"])
+        selected_dataset = st.selectbox("Датасет", options=datasets, format_func=lambda x: x["name"])
 
     # 3. Параметры
-    with st.expander("️ Параметры бенчмарка", expanded=False):
+    with st.expander("️Параметры бенчмарка", expanded=False):
         c1, c2, c3, c4 = st.columns(4)
         streams = c1.text_input("Потоки (через запятую)", "1,2,4,8")
         duration = c2.number_input("Длительность (сек)", 5, 120, 15)
@@ -1201,7 +1299,7 @@ elif page == PAGE_BENCHMARK:
         imgsz = c4.selectbox("Размер изображения", [320, 416, 512, 640, 768], index=3)
 
     # 4. Кнопка запуска
-    if st.button("🚀 Запустить бенчмарк", type="primary", use_container_width=True):
+    if st.button("Запустить бенчмарк", type="primary", use_container_width=True):
         ds_path = Path(selected_dataset["data_yaml"]).parent
         # Пробуем оба формата расположения папки val
         images_dir = str(ds_path / "val" / "images")
@@ -1258,7 +1356,7 @@ elif page == PAGE_BENCHMARK:
 
             # --- Отрисовка результатов: Скорость ---
             if "speed" in result:
-                st.subheader("⚡ Скорость (FPS)")
+                st.subheader("Скорость (FPS)")
                 speed_data = []
                 for streams_count, metrics in result["speed"].items():
                     speed_data.append({
@@ -1284,6 +1382,6 @@ elif page == PAGE_BENCHMARK:
                 del st.session_state["bench_task_id"]
                 st.rerun()
         else:
-            # Если running или pending, делаем rerun через 3 секунды для обновления прогресса
+            
             time.sleep(3)
             st.rerun()
