@@ -339,9 +339,9 @@ elif page == PAGE_UPLOAD:
             if st.button("Сохранить изображения"):
                 if not project_dir.exists():
                     project_dir.mkdir(parents=True)
-                    (project_dir / "images").mkdir()
+                    (project_dir / "frames").mkdir()
 
-                images_dir = project_dir / "images"
+                images_dir = project_dir / "frames"
                 for file in uploaded_files:
                     with open(images_dir / file.name, "wb") as f:
                         f.write(file.getbuffer())
@@ -583,7 +583,7 @@ elif page == PAGE_REVIEW:
                     st.markdown(f"**{emoji} [{idx}] {cls}**")
                     st.markdown(f":{conf_color}[{conf:.2f}]")
                     if reason:
-                        st.caption(f"📝 {reason[:40]}{'...' if len(reason) > 40 else ''}")
+                        st.caption(f" {reason[:40]}{'...' if len(reason) > 40 else ''}")
                     st.markdown(
                         f"<div style='width:24px;height:24px;background:{cls_color};border:2px solid #333;border-radius:3px;display:inline-block;margin:2px 0'></div>",
                         unsafe_allow_html=True,
@@ -641,7 +641,7 @@ elif page == PAGE_REVIEW:
             st.rerun()
 
 elif page == PAGE_SPOTCHECK:
-    st.title("🎲 Spot Check — контроль качества пайплайна")
+    st.title("Spot Check — контроль качества пайплайна")
  
     st.markdown("""
     **Spot Check** — проверка случайных кадров из `clean/` для контроля качества пайплайна.
@@ -1073,7 +1073,7 @@ elif page == PAGE_MERGE:
                         if total_to_copy:
                             progress_bar.progress(min(1.0, total_copied / total_to_copy))
 
-                # ─ 4. data.yaml под новый макет ─
+                # 4. data.yaml под новый макет 
                 with open("classes.json", "r", encoding="utf-8") as f:
                     classes_data = json.load(f)
                 classes_list = classes_data.get("classes", classes_data.get("classes ", []))
@@ -1263,9 +1263,6 @@ elif page == PAGE_TEST:
                 else:
                     st.error(f"❌ Ошибка: {status.get('message')}")
 
-
-# БЕНЧМАРК МОДЕЛИ
-
 elif page == PAGE_BENCHMARK:
     st.title("Бенчмарк модели")
     st.markdown("Оценка качества (mAP) и скорости (FPS) обученной модели.")
@@ -1301,7 +1298,6 @@ elif page == PAGE_BENCHMARK:
     # 4. Кнопка запуска
     if st.button("Запустить бенчмарк", type="primary", use_container_width=True):
         ds_path = Path(selected_dataset["data_yaml"]).parent
-        # Пробуем оба формата расположения папки val
         images_dir = str(ds_path / "val" / "images")
         if not Path(images_dir).exists():
             images_dir = str(ds_path / "images" / "val")
@@ -1332,9 +1328,8 @@ elif page == PAGE_BENCHMARK:
             st.success("✅ Бенчмарк завершён!")
             result = status.get("result", {})
 
-            # --- Отрисовка результатов: Качество ---
             if "quality" in result:
-                st.subheader("📈 Метрики качества")
+                st.subheader("Метрики качества")
                 overall = result["quality"].get("overall", {})
                 c1, c2, c3, c4 = st.columns(4)
                 c1.metric("Precision", f"{overall.get('precision', 0):.3f}")
@@ -1353,8 +1348,7 @@ elif page == PAGE_BENCHMARK:
                         "mAP50-95": f"{metrics.get('mAP50-95', 0):.3f}"
                     })
                 st.dataframe(pd.DataFrame(class_data), use_container_width=True, hide_index=True)
-
-            # --- Отрисовка результатов: Скорость ---
+-
             if "speed" in result:
                 st.subheader("Скорость (FPS)")
                 speed_data = []
