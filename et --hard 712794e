@@ -1,0 +1,16 @@
+[33md42ae02[m[33m ([m[1;36mHEAD[m[33m -> [m[1;32mmain[m[33m, [m[1;31morigin/main[m[33m, [m[1;31morigin/HEAD[m[33m)[m HEAD@{0}: reset: moving to HEAD~1
+[33m712794e[m HEAD@{1}: reset: moving to HEAD~1
+[33m73cd288[m HEAD@{2}: revert: Revert "Update"
+[33m712794e[m HEAD@{3}: commit: Update
+[33md42ae02[m[33m ([m[1;36mHEAD[m[33m -> [m[1;32mmain[m[33m, [m[1;31morigin/main[m[33m, [m[1;31morigin/HEAD[m[33m)[m HEAD@{4}: pull: Fast-forward
+[33m412aa77[m HEAD@{5}: pull: Fast-forward
+[33m6f08317[m HEAD@{6}: commit (amend): Update
+[33m6921e9c[m HEAD@{7}: commit: Update
+[33m994de6e[m HEAD@{8}: pull: Fast-forward
+[33m16d5818[m HEAD@{9}: pull -v: Fast-forward
+[33m189afb0[m HEAD@{10}: commit: ADD page merge for merge yolo dataset and add statistic for review
+[33m732b217[m HEAD@{11}: pull: Merge made by the 'ort' strategy.
+[33maf7a470[m HEAD@{12}: commit: Сохраняю локальную версию main.py перед обновлением
+[33m7ea7e00[m HEAD@{13}: reset: moving to HEAD~1
+[33md2adf7c[m HEAD@{14}: commit: Добавлен Streamlit интерфейс и исправлены пути
+[33m7ea7e00[m HEAD@{15}: clone: from github.com:MazDa2005/auto_labeling.git

@@ -14,6 +14,50 @@ from pathlib import Path
 import cv2
 import yaml
 
+def _get_key(d: dict, key: str, default=None):
+    """
+    Аккуратно читает ключи с учётом возможных пробелов:
+    "classes" / "classes ", "name" / "name " и т.п.
+    """
+    if key in d:
+        return d[key]
+    if f"{key} " in d:
+        return d[f"{key} "]
+    return default
+
+
+def load_names_and_colors(classes_file: str) -> tuple[list[str], dict[str, str]]:
+    """
+    Читает имена классов и цвета из classes.json.
+    Возвращает (names, colors).
+    """
+    with open(classes_file, "r", encoding="utf-8") as f:
+        data = json.load(f)
+
+    classes_list = _get_key(data, "classes", [])
+
+    classes_list = sorted(
+        classes_list,
+        key=lambda c: int(_get_key(c, "index", 0) or 0)
+    )
+
+    names = []
+    colors = {}
+
+    for c in classes_list:
+        name = str(_get_key(c, "name", "")).strip()
+        color = str(_get_key(c, "color", "")).strip()
+
+        if not name:
+            continue
+
+        names.append(name)
+
+        if color:
+            colors[name] = color
+
+    return names, colors
+
 def load_class_mapping(classes_file: str) -> dict[str, int]:
     """Загружает маппинг классов, устойчив к пробелам в ключах JSON."""
     with open(classes_file, "r", encoding="utf-8") as f:
@@ -51,30 +95,65 @@ def bbox_to_polygon(bbox: list[float]) -> list[tuple[float, float]]:
     x1, y1, x2, y2 = bbox
     return [(x1, y1), (x2, y1), (x2, y2), (x1, y2)]
 
-def convert_detection(det: dict, img_w: int, img_h: int, class_mapping: dict[str, int]) -> str | None:
+def resolve_mask_path(mask_path: str, annotations_dir: Path) -> Path | None:
+    """
+    Ищет файл маски даже если mask_path устарел (маска переехала при review→clean).
+    Сначала проверяет путь как есть, потом ищет по имени файла в соседних папках масок.
+    """
+    p = Path(mask_path)
+    if p.exists():
+        return p
+    # Маска могла переехать review/masks → clean/masks или наоборот
+    name = p.name
+    for base in [annotations_dir, annotations_dir.parent]:
+        for subdir in ("masks", "clean/masks", "review/masks"):
+            cand = base / subdir / name
+            if cand.exists():
+                return cand
+    return None
+
+
+# Глобальные счётчики для диагностики (сбрасываются при каждом запуске convert)
+_mask_ok = 0
+_mask_fallback = 0
+
+
+def convert_detection(det: dict, img_w: int, img_h: int, class_mapping: dict[str, int],
+                       annotations_dir: Path | None = None) -> str | None:
+    global _mask_ok, _mask_fallback
+
+    if det.get("qc_bucket") != "accepted":
+        return None
     cls_name = det.get("class", "").strip()
     if not cls_name or cls_name not in class_mapping:
-        print(f"[WARN] Класс '{cls_name}' отсутствует в classes.json — пропускаю", file=sys.stderr)
+        print(f"[WARN] Класс '{cls_name}' отсутствует в маппинге — пропускаю", file=sys.stderr)
         return None
-    
+
     class_id = class_mapping[cls_name]
-    
+
     polygon = None
     mask_path = det.get("mask_path")
-    if mask_path and Path(mask_path).exists():
-        polygon = mask_to_polygon(mask_path)
-    
-    if polygon is None:
+    if mask_path:
+        resolved = resolve_mask_path(mask_path, annotations_dir) if annotations_dir else (
+            Path(mask_path) if Path(mask_path).exists() else None
+        )
+        if resolved:
+            polygon = mask_to_polygon(str(resolved))
+
+    if polygon is not None:
+        _mask_ok += 1
+    else:
+        _mask_fallback += 1
         bbox = det.get("bbox")
         if not bbox or len(bbox) != 4:
             return None
         polygon = bbox_to_polygon(bbox)
-    
+
     normalized = []
     for x, y in polygon:
         normalized.append(x / img_w)
         normalized.append(y / img_h)
-    
+
     coords_str = " ".join(f"{v:.6f}" for v in normalized)
     return f"{class_id} {coords_str}"
 
@@ -137,7 +216,7 @@ def process_split(
         
         lines = []
         for det in detections:
-            line = convert_detection(det, width, height, class_mapping)
+            line = convert_detection(det, width, height, class_mapping, annotations_dir)
             if line:
                 lines.append(line)
         
@@ -211,7 +290,10 @@ def convert(annotations_dir: str, classes_file: str, output_dir: str, val_ratio:
     
     total_converted = 0
     total_skipped = 0
-    
+    global _mask_ok, _mask_fallback
+    _mask_ok = 0
+    _mask_fallback = 0
+
     for split_name, files in splits.items():
         if not files:
             print(f"\n⚠️  Сплит '{split_name}' пуст — пропускаю", file=sys.stderr)
@@ -231,16 +313,19 @@ def convert(annotations_dir: str, classes_file: str, output_dir: str, val_ratio:
         total_skipped += skipped
         print(f"✅ {split_name}: {converted} сконвертировано, {skipped} пропущено")
     
-    # Генерация data.yaml в формате merge
-    with open(classes_file, "r", encoding="utf-8") as f:
-        classes_data = json.load(f)
-    
-    classes_list = classes_data.get("classes", classes_data.get("classes ", []))
-    names = [
-        c.get("name", c.get("name ", "")).strip() 
-        for c in sorted(classes_list, key=lambda c: c.get("index", c.get("index ", 0)))
-    ]
-    
+    # Статистика масок — главный индикатор качества датасета
+    total_dets = _mask_ok + _mask_fallback
+    if total_dets > 0:
+        pct = _mask_ok / total_dets * 100
+        print(f"\n📊 Маски: {_mask_ok}/{total_dets} настоящих полигонов ({pct:.1f}%), "
+              f"{_mask_fallback} bbox-прямоугольников")
+        if pct < 50:
+            print("[WARN] Больше половины детекций — прямоугольники. "
+                  "Проверь, что mask_path в JSON актуальны перед конвертацией.", file=sys.stderr)
+
+    # Генерация data.yaml с цветами
+    names, colors = load_names_and_colors(classes_file)
+
     data_yaml = {
         "path": str(output_path.resolve()),
         "train": "train/images",
@@ -248,6 +333,9 @@ def convert(annotations_dir: str, classes_file: str, output_dir: str, val_ratio:
         "nc": len(names),
         "names": names,
     }
+
+    if colors:
+        data_yaml["colors"] = colors
     
     yaml_path = output_path / "data.yaml"
     with open(yaml_path, "w", encoding="utf-8") as f:

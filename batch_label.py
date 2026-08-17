@@ -4,11 +4,20 @@
 
 Порядок: detect -> refine -> verify -> [qc].
 После QC результаты раскладываются по clean/ и review/ для ручного ревью.
+
+Улучшения:
+- Передача PYTORCH_CUDA_ALLOC_CONF в подпроцессы (борьба с фрагментацией VRAM).
+- Устойчивое чтение classes.json (защита от пробелов в ключах).
+- Fail-fast: остановка пайплайна при ошибке teacher-скрипта.
+- Поле "image" сохраняется в detect_merged (необходимо для QC-фильтра).
+
 Пример:
     python batch_label.py --images-dir frames/ --config pipeline_config.yaml --out-dir annotations/
 """
 import argparse
+import gc
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -19,12 +28,15 @@ from PIL import Image, ImageDraw
 
 from teachers.pipeline_utils import list_images, merge_new_detections, get_class_names
 
+# 🛡️ Глобальная защита от фрагментации VRAM
+os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True,max_split_size_mb:128"
+
 
 def get_python_cmd(stage: dict) -> list[str]:
     """Возвращает команду для запуска Python (оптимизировано для Docker)."""
     if "python_exe" in stage:
         return [stage["python_exe"]]
-    return [f"/opt/conda/envs/{stage['conda_env']}/bin/python"]
+    return ["conda", "run", "-n", stage["conda_env"], "--no-capture-output", "python"]
 
 
 def load_stages(config_path: str) -> list[dict]:
@@ -48,23 +60,39 @@ def run_stage_batch(stage: dict, images_dir: str, out_dir: str, extra_args: list
         cmd.extend(["--pretrained", str(stage["pretrained"])])
 
     print(f"\n=== [{stage['name']}] ({stage['type']}) окружение: {stage['conda_env']} ===")
-    result = subprocess.run(cmd)  # без capture_output — чтобы видеть прогресс в реальном времени
+
+    # 🛡️ Передаём переменные окружения для борьбы с фрагментацией VRAM
+    env = os.environ.copy()
+    env["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True,max_split_size_mb:128"
+
+    result = subprocess.run(cmd, env=env)
+
+    # 🛡️ Fail-fast: останавливаем пайплайн при ошибке teacher-скрипта
     if result.returncode != 0:
-        print(f"[WARN] {stage['name']} завершился с ошибкой (код {result.returncode})", file=sys.stderr)
+        print(
+            f"[ERROR] {stage['name']} завершился с ошибкой (код {result.returncode}). Остановка.",
+            file=sys.stderr,
+        )
+        sys.exit(result.returncode)
 
 
 def load_class_colors(classes_file: str = "classes.json") -> dict[str, tuple[int, int, int]]:
-    """Загружает цвета классов из classes.json (BGR -> RGB для PIL)."""
+    """Загружает цвета классов из classes.json (устойчиво к пробелам в ключах)."""
     with open(classes_file, "r", encoding="utf-8") as f:
         data = json.load(f)
+
+    # 🛡️ Защита от пробелов в ключах ("classes " или "classes")
+    classes_list = data.get("classes", data.get("classes ", []))
+
     colors = {}
-    for c in data["classes"]:
-        hex_color = c.get("color", "#808080").lstrip("#")
+    for c in classes_list:
+        name = c.get("name", c.get("name ", "")).strip()
+        hex_color = c.get("color", c.get("color ", "#808080")).strip().lstrip("#")
         if len(hex_color) == 6:
             r = int(hex_color[0:2], 16)
             g = int(hex_color[2:4], 16)
             b = int(hex_color[4:6], 16)
-            colors[c["name"]] = (r, g, b)
+            colors[name] = (r, g, b)
     return colors
 
 
@@ -80,7 +108,7 @@ def save_annotated_image(image_path: str, detections: list[dict], out_path: str,
     masks_drawn = 0
     masks_missing = 0
 
-    # 1. Полупрозрачные МАСКИ (цвет из classes.json) 
+    # 1. Полупрозрачные МАСКИ (цвет из classes.json)
     for det in detections:
         mask_path = det.get("mask_path")
         if not mask_path:
@@ -95,7 +123,7 @@ def save_annotated_image(image_path: str, detections: list[dict], out_path: str,
         threshold = 127 if mask_np.max() > 1 else 0
         mask_array = mask_np > threshold
         colored = np.zeros((*mask_array.shape, 4), dtype=np.uint8)
-        colored[mask_array] = (*rgb, 60) 
+        colored[mask_array] = (*rgb, 60)
         overlay = Image.alpha_composite(overlay, Image.fromarray(colored, mode="RGBA"))
         masks_drawn += 1
 
@@ -105,7 +133,7 @@ def save_annotated_image(image_path: str, detections: list[dict], out_path: str,
     img = Image.alpha_composite(img.convert("RGBA"), overlay).convert("RGB")
     draw = ImageDraw.Draw(img)
 
-    #  2. Боксы и подписи 
+    # 2. Боксы и подписи
     for det in detections:
         cls = det["class"]
         x1, y1, x2, y2 = det["bbox"]
@@ -129,7 +157,22 @@ def save_annotated_image(image_path: str, detections: list[dict], out_path: str,
         draw.text((x1 + 3, ty + 2), label, fill=(255, 255, 255))
 
     img.save(out_path)
+    img.close()  # 🛡️ Освобождаем RAM
     print(f"[batch] {Path(out_path).stem}: отрисовано {masks_drawn} масок, пропущено {masks_missing}")
+
+
+def load_classes_from_file(path: str = "classes.json") -> list[str]:
+    """Загружает имена классов, устойчиво к пробелам в ключах JSON."""
+    with open(path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+
+    # 🛡️ Защита от пробелов в ключах
+    classes_list = data.get("classes", data.get("classes ", []))
+
+    return [
+        c.get("name", c.get("name ", "")).strip()
+        for c in sorted(classes_list, key=lambda x: x.get("index", x.get("index ", 0)))
+    ]
 
 
 def main():
@@ -164,7 +207,9 @@ def main():
     verify_stages = [s for s in stages if s["type"] == "verify"]
     qc_stages = [s for s in stages if s["type"] == "qc"]
 
+    # ==========================================
     # 1. DETECT — запускается один раз на всю папку с картинками
+    # ==========================================
     detect_out = stage_out_root / "detect_merged"
     detect_out.mkdir(parents=True, exist_ok=True)
 
@@ -175,6 +220,8 @@ def main():
         run_stage_batch(stage, args.images_dir, stage_dir, extra_args)
         per_stage_dirs.append(stage_dir)
 
+    # Слияние детекций всех detect-этапов по каждой картинке
+    # 🛡️ КРИТИЧЕСКИ ВАЖНО: сохраняем поле "image" с абсолютным путём — это нужно QC-фильтру!
     for image_path in images:
         merged = []
         for stage_dir in per_stage_dirs:
@@ -191,8 +238,11 @@ def main():
             }, f, indent=2, ensure_ascii=False)
 
     current_dir = detect_out
+    gc.collect()
 
-    # 2. REFINE — тоже один раз на всю папку, читает боксы из предыдущего этапа
+    # ==========================================
+    # 2. REFINE — один раз на всю папку, читает боксы из предыдущего этапа
+    # ==========================================
     for stage in refine_stages:
         stage_dir = str(stage_out_root / stage["name"])
         run_stage_batch(
@@ -201,7 +251,11 @@ def main():
         )
         current_dir = Path(stage_dir)
 
+    gc.collect()
+
+    # ==========================================
     # 3. VERIFY — один раз на всю папку
+    # ==========================================
     for stage in verify_stages:
         stage_dir = str(stage_out_root / stage["name"])
         threshold = str(stage.get("threshold", 0.25))
@@ -211,7 +265,11 @@ def main():
         )
         current_dir = Path(stage_dir)
 
+    gc.collect()
+
+    # ==========================================
     # 4. QC FILTER (опционально)
+    # ==========================================
     if qc_stages:
         qc_stage = qc_stages[0]
         python_cmd = get_python_cmd(qc_stage)
@@ -223,16 +281,41 @@ def main():
             "--masks-root", str(masks_root),
         ]
         print(f"\n=== [{qc_stage['name']}] ({qc_stage['type']}) окружение: {qc_stage['conda_env']} ===")
-        result = subprocess.run(cmd)
+
+        env = os.environ.copy()
+        env["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True,max_split_size_mb:128"
+
+        result = subprocess.run(cmd, env=env)
         if result.returncode != 0:
-            print(f"[WARN] {qc_stage['name']} завершился с ошибкой (код {result.returncode})", file=sys.stderr)
+            print(f"[ERROR] {qc_stage['name']} завершился с ошибкой (код {result.returncode}). Остановка.", file=sys.stderr)
             sys.exit(1)
 
-        print(f"\n QC-фильтр завершил работу.")
-        return
+        print(f"\n✅ QC-фильтр завершил работу. Результаты разложены по clean/ и review/")
 
+        # 🖼️ Отрисовка annotated-картинок ПО ВСЕМ кадрам прямо в out_dir,
+        # независимо от того, куда QC их потом разложил (clean/ или review/).
+        # Полезно для быстрого визуального просмотра всего батча в одном месте.
+        print(f"\n🖼️ Отрисовка annotated-превью в {out_dir}...")
+        for image_path in images:
+            result_path = current_dir / f"{image_path.stem}.json"
+            if not result_path.exists():
+                continue
+            with open(result_path, "r", encoding="utf-8") as f:
+                detections = json.load(f).get("detections", [])
+            try:
+                save_annotated_image(
+                    str(image_path), detections,
+                    str(out_dir / f"{image_path.stem}_annotated.jpg"),
+                    args.classes_file,
+                )
+            except Exception as e:
+                print(f"[WARN] {image_path.name}: не удалось отрисовать ({e})", file=sys.stderr)
+
+        return
+    # ==========================================
     # 5. Финальная сборка (если QC выключен)
-    print(f"\n Финальная сборка (без QC-фильтра)")
+    # ==========================================
+    print(f"\n✅ Финальная сборка (без QC-фильтра)")
     summary = []
     for image_path in images:
         result_path = current_dir / f"{image_path.stem}.json"
@@ -267,9 +350,11 @@ def main():
         summary.append({"image": image_path.name, "num_detections": len(detections)})
         print(f"{image_path.name}: {len(detections)} детекций")
 
+        img.close()  # 🛡️ Освобождаем RAM
+
     with open(out_dir / "_batch_summary.json", "w", encoding="utf-8") as f:
         json.dump(summary, f, indent=2, ensure_ascii=False)
-    print(f"\n Готово. Результаты в {out_dir}")
+    print(f"\n🎉 Готово. Результаты в {out_dir}")
 
 
 if __name__ == "__main__":

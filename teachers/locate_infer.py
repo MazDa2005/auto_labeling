@@ -1,14 +1,6 @@
 """
-LocateAnything в роли DETECT.
-
-Запускается в conda-окружении `nvidia`.
-ПАКЕТНЫЙ режим: модель грузится ОДИН РАЗ, затем обрабатывает все картинки в --images-dir.
-Для каждой картинки пишет отдельный JSON в --out-dir (по имени файла картинки).
-
-Промпты берутся из classes.json (единый источник правды). Если у класса нет поля 'prompts' —
-используется fallback: имя класса с заменой '_' на пробелы.
+LocateAnything в роли DETECT (с chunking классов для экономии VRAM).
 """
-
 import argparse
 import gc
 import json
@@ -22,14 +14,17 @@ import torch
 from PIL import Image
 
 from locate_anything_worker import LocateAnythingWorker
-from pipeline_utils import list_images, get_primary_prompts, build_reverse_prompt_lookup
+from pipeline_utils import list_images, get_primary_prompts, build_reverse_prompt_lookup, merge_new_detections
+
+
+def chunk_list(lst: list, chunk_size: int) -> list[list]:
+    """Разбивает список на чанки заданного размера."""
+    if chunk_size <= 0:
+        return [lst]
+    return [lst[i:i + chunk_size] for i in range(0, len(lst), chunk_size)]
 
 
 def load_prompts_with_fallback(classes: list[str], classes_file: str) -> dict[str, str]:
-    """
-    Загружает промпты из classes.json. Если у класса нет поля 'prompts' —
-    использует fallback: имя класса с заменой '_' на пробелы.
-    """
     try:
         all_prompts = get_primary_prompts(classes_file)
         if all_prompts:
@@ -40,38 +35,37 @@ def load_prompts_with_fallback(classes: list[str], classes_file: str) -> dict[st
                         all_prompts[cls] = cls.replace("_", " ")
                 return all_prompts
     except (KeyError, FileNotFoundError, json.JSONDecodeError) as e:
-        print(f"[WARN] не удалось прочитать промпты из {classes_file}: {e}. "
-              f"Использую fallback.", file=sys.stderr)
+        print(f"[WARN] не удалось прочитать промпты: {e}. Использую fallback.", file=sys.stderr)
 
     return {cls: cls.replace("_", " ") for cls in classes}
 
 
 def build_label_lookup(classes: list[str], classes_file: str) -> dict[str, str]:
-    """
-    Обратное сопоставление: промпт (lowercase) -> каноническое имя класса.
-    """
     try:
         lookup = build_reverse_prompt_lookup(classes_file)
         if lookup:
             return lookup
     except (KeyError, FileNotFoundError, json.JSONDecodeError):
         pass
-
     return {c.lower().strip().replace("_", " "): c for c in classes}
 
 
-def process_image(worker, image_path: Path, classes: list[str], classes_file: str) -> list[dict]:
-    """Обрабатывает изображения"""
-    img = Image.open(image_path).convert("RGB")
+def process_image_chunk(
+    worker, 
+    image: Image.Image, 
+    classes_chunk: list[str], 
+    classes_file: str,
+    img_width: int,
+    img_height: int,
+) -> list[dict]:
+    """Обрабатывает изображение для одного чанка классов."""
+    prompts = load_prompts_with_fallback(classes_chunk, classes_file)
+    prompt_classes = [prompts.get(c, c) for c in classes_chunk]
 
-    prompts = load_prompts_with_fallback(classes, classes_file)
-    prompt_classes = [prompts.get(c, c) for c in classes]
+    result = worker.detect(image, prompt_classes)
+    boxes = LocateAnythingWorker.parse_boxes_with_refs(result["answer"], img_width, img_height)
 
-    result = worker.detect(img, prompt_classes)
-
-    boxes = LocateAnythingWorker.parse_boxes_with_refs(result["answer"], *img.size)
-
-    label_lookup = build_label_lookup(classes, classes_file)
+    label_lookup = build_label_lookup(classes_chunk, classes_file)
 
     detections = []
     for b in boxes:
@@ -92,21 +86,20 @@ def process_image(worker, image_path: Path, classes: list[str], classes_file: st
             "source": "locate_anything",
         })
 
-    print(f"Итоговых детекций: {len(detections)}")
-
-    torch.cuda.empty_cache()
-    gc.collect()
     return detections
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--images-dir", required=True)
-    parser.add_argument("--classes", required=True, help="comma-separated, e.g. person,helmet,gloves")
-    parser.add_argument("--classes-file", default="classes.json",
-                        help="Файл с классами и промптами (единый источник правды)")
+    parser.add_argument("--classes", required=True, help="comma-separated")
+    parser.add_argument("--classes-file", default="classes.json")
     parser.add_argument("--model", default="nvidia/LocateAnything-3B")
     parser.add_argument("--out-dir", required=True)
+    parser.add_argument("--chunk-size", type=int, default=15,  # 🛡️ НОВОЕ
+                        help="Максимум классов за один промпт (экономит VRAM)")
+    parser.add_argument("--max-image-size", type=int, default=1024,  # 🛡️ НОВОЕ
+                        help="Максимальный размер изображения (px)")
     args = parser.parse_args()
 
     classes = [c.strip() for c in args.classes.split(",")]
@@ -118,20 +111,52 @@ if __name__ == "__main__":
 
     Path(args.out_dir).mkdir(parents=True, exist_ok=True)
 
-    print(f"[locate_anything] загрузка модели...")
+    # 🛡️ Разбиваем классы на чанки
+    class_chunks = chunk_list(classes, args.chunk_size)
+    if len(class_chunks) > 1:
+        print(f"🔀 Разбиваю {len(classes)} классов на {len(class_chunks)} чанков по {args.chunk_size}")
+
+    print(f"[locate_anything] загрузка модели (max_image_size={args.max_image_size})...")
     if not torch.cuda.is_available():
         print("[WARN] LocateAnything работает на CPU — будет очень медленно", file=sys.stderr)
 
-    worker = LocateAnythingWorker(args.model)
+    # 🛡️ Передаём ограничение размера изображения в worker
+    worker = LocateAnythingWorker(
+        args.model,
+        max_image_size=args.max_image_size,
+    )
     print("[locate_anything] модель загружена, начинаю обработку")
 
     for i, image_path in enumerate(images, 1):
         out_path = Path(args.out_dir) / f"{image_path.stem}.json"
         try:
-            detections = process_image(worker, image_path, classes, args.classes_file)
+            img = Image.open(image_path).convert("RGB")
+            img_width, img_height = img.size
+            
+            all_detections = []
+            
+            # 🛡️ Обрабатываем каждый чанк классов отдельно
+            for chunk_idx, class_chunk in enumerate(class_chunks):
+                if len(class_chunks) > 1:
+                    print(f"  Чанк {chunk_idx + 1}/{len(class_chunks)}: {len(class_chunk)} классов")
+                
+                chunk_dets = process_image_chunk(
+                    worker, img, class_chunk, args.classes_file,
+                    img_width, img_height,
+                )
+                all_detections = merge_new_detections(all_detections, chunk_dets)
+                
+                # 🛡️ Очистка памяти после каждого чанка
+                torch.cuda.empty_cache()
+                gc.collect()
+            
             with open(out_path, "w", encoding="utf-8") as f:
-                json.dump({"detections": detections}, f, indent=2, ensure_ascii=False)
-            print(f"[{i}/{len(images)}] {image_path.name}: {len(detections)} детекций")
+                json.dump({"detections": all_detections}, f, indent=2, ensure_ascii=False)
+            
+            print(f"[{i}/{len(images)}] {image_path.name}: {len(all_detections)} детекций")
+            
+            img.close()
+            
         except Exception as e:
             with open(out_path, "w", encoding="utf-8") as f:
                 json.dump({"error": str(e), "detections": []}, f, indent=2)

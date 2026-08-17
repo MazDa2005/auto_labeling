@@ -5,8 +5,13 @@ SAM3 в режиме REFINE.
 
 Запускается в conda-окружении `sam3`.
 
+Исправления:
+- Создание папки masks_dir перед сохранением маски
+- При ошибке сохранения маски — детекция сохраняется с mask_path=None (fallback на bbox)
+- Очистка VRAM между картинками для предотвращения OOM
 """
 import argparse
+import gc
 import json
 import sys
 from pathlib import Path
@@ -19,35 +24,50 @@ from pipeline_utils import list_images, mask_to_bbox, save_mask_png, iou
 def process_image(predictor, image_path: Path, input_detections: list[dict], masks_dir: str) -> list[dict]:
     predictor.set_image(str(image_path))
 
+    # 🛡️ КЛЮЧЕВОЕ ИСПРАВЛЕНИЕ: создаём папку для масок этой картинки
+    Path(masks_dir).mkdir(parents=True, exist_ok=True)
+
     refined = []
     for i, det in enumerate(input_detections):
         bbox = det["bbox"]
-        results = predictor(bboxes=[bbox])
-
-        r = results[0] if results else None
         new_bbox = bbox
         mask_area = None
         mask_path = None
         confidence = det.get("confidence")
 
-        if r is not None and r.masks is not None and len(r.masks) > 0:
-            mask = r.masks.data[0].cpu().numpy()
-            candidate = mask_to_bbox(mask)
-            if candidate is not None:
-                new_bbox = candidate
-                mask_area = float((mask > 0.5).sum())
+        try:
+            results = predictor(bboxes=[bbox])
+            r = results[0] if results else None
 
-            mask_path = str(Path(masks_dir) / f"det_{i:03d}_{det['class']}.png")
-            save_mask_png(mask, mask_path)
+            if r is not None and r.masks is not None and len(r.masks) > 0:
+                mask = r.masks.data[0].cpu().numpy()
+                candidate = mask_to_bbox(mask)
+                if candidate is not None:
+                    new_bbox = candidate
+                    mask_area = float((mask > 0.5).sum())
 
-        # проверка, что sam3 сегментировал нужный объект
-        refine_iou = iou(bbox, new_bbox)
+                # 🛡️ Безопасное сохранение маски
+                mask_filename = f"det_{i:03d}_{det['class']}.png"
+                mask_full_path = Path(masks_dir) / mask_filename
+                try:
+                    save_mask_png(mask, str(mask_full_path))
+                    mask_path = str(mask_full_path)
+                except Exception as e:
+                    print(f"  [WARN] Не удалось сохранить маску {mask_filename}: {e}", file=sys.stderr)
+                    mask_path = None  # Fallback: детекция останется, но без маски
 
-        if r is not None and r.boxes is not None and len(r.boxes) > 0:
-            try:
-                confidence = float(r.boxes.conf[0])
-            except (IndexError, AttributeError, TypeError):
-                pass
+            # проверка, что sam3 сегментировал нужный объект
+            refine_iou = iou(bbox, new_bbox)
+
+            if r is not None and r.boxes is not None and len(r.boxes) > 0:
+                try:
+                    confidence = float(r.boxes.conf[0])
+                except (IndexError, AttributeError, TypeError):
+                    pass
+
+        except Exception as e:
+            print(f"  [WARN] Ошибка при обработке детекции #{i} ({det['class']}): {e}", file=sys.stderr)
+            refine_iou = iou(bbox, new_bbox)
 
         refined.append({
             "class": det["class"],
@@ -55,8 +75,8 @@ def process_image(predictor, image_path: Path, input_detections: list[dict], mas
             "confidence": confidence,
             "source": f"{det.get('source', 'unknown')}+sam3_refine",
             "mask_area": mask_area,
-            "mask_path": mask_path,
-            "refine_iou": refine_iou,
+            "mask_path": mask_path,  # Может быть None, если маска не сохранилась
+            "refine_iou": refine_iou if 'refine_iou' in locals() else 0.0,
         })
 
     return refined
@@ -69,7 +89,7 @@ if __name__ == "__main__":
     parser.add_argument("--model", default="sam3.pt")
     parser.add_argument("--masks-root", default="masks")
     parser.add_argument("--classes-file", default="classes.json",
-                     help="Не используется в самом refine, но передаётся оркестратором для единообразия CLI")
+                        help="Не используется в самом refine, но передаётся оркестратором для единообразия CLI")
     parser.add_argument("--out-dir", required=True)
     args = parser.parse_args()
 
@@ -79,6 +99,9 @@ if __name__ == "__main__":
         sys.exit(1)
 
     Path(args.out_dir).mkdir(parents=True, exist_ok=True)
+    
+    # 🛡️ Создаём корневую папку для масок
+    Path(args.masks_root).mkdir(parents=True, exist_ok=True)
 
     print(f"[sam3] загрузка модели (один раз на весь батч из {len(images)} картинок)...")
     print(f"CUDA available: {torch.cuda.is_available()}", file=sys.stderr)
@@ -103,19 +126,36 @@ if __name__ == "__main__":
             continue
 
         with open(boxes_path, "r", encoding="utf-8") as f:
-            data = json.load(f)  
+            data = json.load(f)
             input_detections = data.get("detections", [])
-    
+
         try:
             refined = process_image(predictor, image_path, input_detections, masks_dir)
-            data["detections"] = refined  
-        
+            data["detections"] = refined
+
             with open(out_path, "w", encoding="utf-8") as f:
                 json.dump(data, f, indent=2, ensure_ascii=False)
             print(f"[{i}/{len(images)}] {image_path.name}: {len(refined)} детекций уточнено")
         except Exception as e:
+            # 🛡️ ИСПРАВЛЕНИЕ: при ошибке сохраняем ИСХОДНЫЕ детекции, а не пустой список
+            print(f"[{i}/{len(images)}] {image_path.name}: ОШИБКА {e}. Сохраняю исходные боксы без масок.", file=sys.stderr)
+            fallback_detections = []
+            for det in input_detections:
+                fallback_detections.append({
+                    "class": det["class"],
+                    "bbox": det["bbox"],
+                    "confidence": det.get("confidence"),
+                    "source": f"{det.get('source', 'unknown')}+sam3_refine_failed",
+                    "mask_path": None,
+                    "refine_iou": 0.0,
+                })
+            data["detections"] = fallback_detections
+            data["error"] = str(e)
             with open(out_path, "w", encoding="utf-8") as f:
-                json.dump({"error": str(e), "detections": []}, f, indent=2)
-            print(f"[{i}/{len(images)}] {image_path.name}: ОШИБКА {e}", file=sys.stderr)
+                json.dump(data, f, indent=2, ensure_ascii=False)
+        
+        # 🛡️ Очистка VRAM между картинками
+        torch.cuda.empty_cache()
+        gc.collect()
 
     print(f"[sam3] готово, результаты в {args.out_dir}")

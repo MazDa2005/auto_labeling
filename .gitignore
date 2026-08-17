@@ -60,4 +60,9 @@ secrets.yaml
 # Jupyter
 .ipynb_checkpoints/
 /docker/environments/
-/doker/miniconda.sh
+/doсker/miniconda.sh
+
+runs_new_head/ppe_detection
+runs/ 
+*.json
+*.jpg

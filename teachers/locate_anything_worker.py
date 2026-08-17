@@ -3,14 +3,34 @@ import torch
 from PIL import Image
 from transformers import AutoModel, AutoTokenizer, AutoProcessor
 
+
 class LocateAnythingWorker:
-    """Stateful worker that loads the model once and serves perception queries."""
-    def __init__(self, model_path: str, device: str = "cuda", dtype=torch.bfloat16):
+    """Stateful worker with memory-safe image processing."""
+    
+    def __init__(
+        self, 
+        model_path: str, 
+        device: str = "cuda", 
+        dtype=torch.bfloat16,
+        max_image_size: int = 1024,  # 🛡️ НОВОЕ: макс. размер изображения
+        min_image_size: int = 448,   # 🛡️ НОВОЕ: мин. размер изображения
+    ):
         self.device = device
         self.dtype = dtype
+        self.max_image_size = max_image_size
+        self.min_image_size = min_image_size
 
         self.tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
-        self.processor = AutoProcessor.from_pretrained(model_path, use_fast=True, trust_remote_code=True)
+        
+        # 🛡️ КЛЮЧЕВОЕ: настраиваем процессор на ограничение размера изображения
+        self.processor = AutoProcessor.from_pretrained(
+            model_path, 
+            use_fast=True, 
+            trust_remote_code=True,
+            min_pixels=min_image_size * min_image_size,
+            max_pixels=max_image_size * max_image_size,
+        )
+        
         self.model = AutoModel.from_pretrained(
             model_path,
             dtype=dtype,
@@ -24,10 +44,13 @@ class LocateAnythingWorker:
         image: Image.Image,
         question: str,
         generation_mode: str = "hybrid",
-        max_new_tokens: int = 2048,
+        max_new_tokens: int = 1024,  # 🛡️ УМЕНЬШЕНО с 2048 до 1024
         temperature: float = 0.7,
         verbose: bool = True,
     ) -> dict:
+        # 🛡️ НОВОЕ: принудительный ресайз изображения ДО безопасного размера
+        image = self._safe_resize(image)
+        
         messages = [
             {"role": "user", "content": [
                 {"type": "image", "image": image},
@@ -47,27 +70,48 @@ class LocateAnythingWorker:
         input_ids = inputs["input_ids"]
         image_grid_hws = inputs.get("image_grid_hws", None)
 
-        response = self.model.generate(
-            pixel_values=pixel_values,
-            input_ids=input_ids,
-            attention_mask=inputs["attention_mask"],
-            image_grid_hws=image_grid_hws,
-            tokenizer=self.tokenizer,
-            max_new_tokens=max_new_tokens,
-            use_cache=True,
-            generation_mode=generation_mode,
-            temperature=temperature,
-            do_sample=True,
-            top_p=0.9,
-            repetition_penalty=1.1,
-            verbose=verbose,
-        )
+        try:
+            response = self.model.generate(
+                pixel_values=pixel_values,
+                input_ids=input_ids,
+                attention_mask=inputs["attention_mask"],
+                image_grid_hws=image_grid_hws,
+                tokenizer=self.tokenizer,
+                max_new_tokens=max_new_tokens,
+                use_cache=True,
+                generation_mode=generation_mode,
+                temperature=temperature,
+                do_sample=True,
+                top_p=0.9,
+                repetition_penalty=1.1,
+                verbose=verbose,
+            )
+        finally:
+            # 🛡️ КРИТИЧЕСКИ ВАЖНО: освобождаем память после каждого вызова
+            del inputs, pixel_values, input_ids, image_grid_hws
+            torch.cuda.empty_cache()
 
         result = {"answer": response[0] if isinstance(response, tuple) else response}
         if isinstance(response, tuple) and len(response) >= 3:
             result["history"] = response[1]
             result["stats"] = response[2]
         return result
+
+    def _safe_resize(self, image: Image.Image) -> Image.Image:
+        """🛡️ Ограничивает размер изображения, сохраняя пропорции."""
+        w, h = image.size
+        max_dim = max(w, h)
+        
+        if max_dim > self.max_image_size:
+            scale = self.max_image_size / max_dim
+            new_w, new_h = int(w * scale), int(h * scale)
+            image = image.resize((new_w, new_h), Image.LANCZOS)
+        elif max_dim < self.min_image_size:
+            scale = self.min_image_size / max_dim
+            new_w, new_h = int(w * scale), int(h * scale)
+            image = image.resize((new_w, new_h), Image.LANCZOS)
+        
+        return image
 
     def detect(self, image: Image.Image, categories: list[str], **kwargs) -> dict:
         cats = "</c>".join(categories)
@@ -103,19 +147,17 @@ class LocateAnythingWorker:
 
     @staticmethod
     def parse_boxes_with_refs(answer: str, image_width: int, image_height: int) -> list[dict]:
-        """Парсит ответ модели с привязкой классов через <ref>...</ref>"""
         boxes = []
-        
         answer = answer.replace('<|im_end|>', '').strip()
         pattern = r'<ref>(.*?)</ref>\s*<box>(.*?)</box>'
-        
+
         for match in re.finditer(pattern, answer, re.DOTALL):
             class_name = match.group(1).strip()
             box_str = match.group(2).strip()
-            
+
             if box_str.lower() == 'none' or not box_str:
                 continue
-            
+
             coords = re.findall(r'<(\d+)>', box_str)
             if len(coords) == 4:
                 x1, y1, x2, y2 = [int(c) for c in coords]
@@ -126,7 +168,7 @@ class LocateAnythingWorker:
                     "x2": x2 / 1000 * image_width,
                     "y2": y2 / 1000 * image_height,
                 })
-        
+
         return boxes
 
     @staticmethod

@@ -31,6 +31,7 @@ def benchmark_quality(weights: str, data_yaml: str, imgsz: int, device: str) -> 
     model = YOLO(weights)
     metrics = model.val(data=data_yaml, imgsz=imgsz, device=device, verbose=False, plots=False)
     names = model.names
+    has_seg = hasattr(metrics, "seg")
 
     try:
         class_indices = metrics.box.ap_class_index
@@ -40,12 +41,20 @@ def benchmark_quality(weights: str, data_yaml: str, imgsz: int, device: str) -> 
     per_class = {}
     for i, cls_id in enumerate(class_indices):
         cls_name = names[int(cls_id)]
-        per_class[cls_name] = {
+        entry = {
             "precision": float(metrics.box.p[i]) if i < len(metrics.box.p) else None,
             "recall": float(metrics.box.r[i]) if i < len(metrics.box.r) else None,
             "mAP50": float(metrics.box.ap50[i]) if i < len(metrics.box.ap50) else None,
             "mAP50-95": float(metrics.box.ap[i]) if i < len(metrics.box.ap) else None,
         }
+        if has_seg:
+            entry.update({
+                "mask_precision": float(metrics.seg.p[i]) if i < len(metrics.seg.p) else None,
+                "mask_recall": float(metrics.seg.r[i]) if i < len(metrics.seg.r) else None,
+                "mask_mAP50": float(metrics.seg.ap50[i]) if i < len(metrics.seg.ap50) else None,
+                "mask_mAP50-95": float(metrics.seg.ap[i]) if i < len(metrics.seg.ap) else None,
+            })
+        per_class[cls_name] = entry
 
     overall = {
         "precision": float(metrics.box.mp),
@@ -53,8 +62,14 @@ def benchmark_quality(weights: str, data_yaml: str, imgsz: int, device: str) -> 
         "mAP50": float(metrics.box.map50),
         "mAP50-95": float(metrics.box.map),
     }
+    if has_seg:
+        overall.update({
+            "mask_precision": float(metrics.seg.mp),
+            "mask_recall": float(metrics.seg.mr),
+            "mask_mAP50": float(metrics.seg.map50),
+            "mask_mAP50-95": float(metrics.seg.map),
+        })
     return {"overall": overall, "per_class": per_class}
-
 
 def _stream_worker(weights: str, sample_images: list[str], imgsz: int, device: str,
                     duration: float, conf: float, result_queue: mp.Queue) -> None:
@@ -155,6 +170,9 @@ def main():
         result["quality"] = benchmark_quality(args.weights, args.data_yaml, args.imgsz, args.device)
         print(f"[bench] Общий mAP50={result['quality']['overall']['mAP50']:.3f}, "
               f"mAP50-95={result['quality']['overall']['mAP50-95']:.3f}")
+        if "mask_mAP50" in result["quality"]["overall"]:
+            print(f"[bench] Маски: mAP50={result['quality']['overall']['mask_mAP50']:.3f}, "
+                  f"mAP50-95={result['quality']['overall']['mask_mAP50-95']:.3f}")
         print("[bench] По классам:")
         for cls_name, m in result["quality"]["per_class"].items():
             print(f"  {cls_name:24s} P={m['precision']:.3f} R={m['recall']:.3f} "

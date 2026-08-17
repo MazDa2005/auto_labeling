@@ -25,7 +25,161 @@ st.set_page_config(page_title="Auto-Labeling", layout="wide", page_icon="🔍")
 # ── Настройки API ────────────────────────────────────────────────────────────
 API_BASE = "http://localhost:8000"
 PROJECTS_DIR = Path("projects")
+# Претрейны COCO как вариант «старой головы»
+COCO_HEADS = {
+    "COCO: yolo11n-seg (лёгкая)": "yolo11n-seg.pt",
+    "COCO: yolo11s-seg (средняя)": "yolo11s-seg.pt",
+    "COCO: yolo11m-seg (тяжёлая)": "yolo11m-seg.pt",
+}
+def get_old_head_options(projects_with_runs: list[str]) -> dict[str, str]:
+    """
+    Единый список вариантов «старой головы»:
+      - COCO-претрейны (yolo11*-seg.pt);
+      - best.pt всех запусков всех проектов.
+    Возвращает {отображаемая подпись: путь к весам}.
+    """
+    options: dict[str, str] = dict(COCO_HEADS)
+    for proj in projects_with_runs:
+        runs = api_get(f"/training-runs/{proj}").get("runs", [])
+        for r in runs:
+            options[f"{proj} / {r['name']}"] = r["weights_path"]
+    return options
 
+def _get_key(d: dict, key: str, default=None):
+    """
+    Поддержка ключей с пробелом:
+    "classes" / "classes ", "name" / "name ", "index" / "index ".
+    """
+    if not isinstance(d, dict):
+        return default
+
+    if key in d:
+        return d[key]
+
+    if f"{key} " in d:
+        return d[f"{key} "]
+
+    return default
+
+
+def load_class_names_from_file(path: str) -> list[str]:
+    """
+    Читает имена классов из classes.json или data.yaml.
+    """
+    p = Path(path)
+
+    if not p.exists():
+        raise FileNotFoundError(f"Файл классов не найден: {path}")
+
+    if p.suffix.lower() in {".yaml", ".yml"}:
+        data = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
+
+        names = data.get("names", data.get("classes"))
+
+        if isinstance(names, dict):
+            return [
+                str(names[k]).strip()
+                for k in sorted(names, key=lambda x: int(str(x)))
+            ]
+
+        if isinstance(names, list):
+            return [str(x).strip() for x in names]
+
+        raise ValueError(f"В {path} нет поля names/classes")
+
+    with open(p, "r", encoding="utf-8") as f:
+        data = json.load(f)
+
+    classes_list = _get_key(data, "classes", [])
+
+    classes_list = sorted(
+        classes_list,
+        key=lambda c: int(_get_key(c, "index", 0) or 0)
+    )
+
+    names = []
+    for c in classes_list:
+        name = str(_get_key(c, "name", "")).strip()
+        if name:
+            names.append(name)
+
+    return names
+
+
+def load_class_colors_from_file(path: str) -> dict[str, str]:
+    """
+    Читает цвета классов из classes.json или data.yaml.
+    """
+    p = Path(path)
+
+    if not p.exists():
+        return {}
+
+    if p.suffix.lower() in {".yaml", ".yml"}:
+        data = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
+
+        colors = data.get("colors")
+
+        if isinstance(colors, dict):
+            return {
+                str(k).strip(): str(v).strip()
+                for k, v in colors.items()
+                if v
+            }
+
+        # Запасной вариант, если data.yaml хранит classes как список словарей
+        classes = data.get("classes")
+        if isinstance(classes, list):
+            out = {}
+            for c in classes:
+                if isinstance(c, dict):
+                    name = str(_get_key(c, "name", "")).strip()
+                    color = str(_get_key(c, "color", "")).strip()
+                    if name and color:
+                        out[name] = color
+            return out
+
+        return {}
+
+    with open(p, "r", encoding="utf-8") as f:
+        data = json.load(f)
+
+    classes_list = _get_key(data, "classes", [])
+
+    colors = {}
+    for c in classes_list:
+        name = str(_get_key(c, "name", "")).strip()
+        color = str(_get_key(c, "color", "")).strip()
+
+        if name and color:
+            colors[name] = color
+
+    return colors
+
+
+def get_class_colors(project: str | None = None) -> dict[str, str]:
+    """
+    Возвращает цвета классов.
+    Сначала пытается взять цвета из data.yaml проекта, потом из глобальных файлов.
+    """
+    candidates: list[Path] = []
+
+    if project:
+        candidates.append(PROJECTS_DIR / project / "dataset_yolo" / "data.yaml")
+        candidates.append(PROJECTS_DIR / project / "classes.json")
+
+    candidates.extend([
+        Path("classes.json"),
+        Path("classes_master.json"),
+        Path("data.yaml"),
+    ])
+
+    for path in candidates:
+        colors = load_class_colors_from_file(str(path))
+        if colors:
+            return colors
+
+    return {}
 
 class _BackgroundUvicornServer(uvicorn.Server):
     def install_signal_handlers(self) -> None:
@@ -204,6 +358,23 @@ def move_to_clean(stem: str, project: str):
         for mask in src_masks.glob(f"{stem}_*"):
             shutil.move(str(mask), str(dst_masks / mask.name))
 
+    # Обновляем mask_path в JSON — старый путь (review/masks/...) больше не существует
+    dst_json = clean_dir / f"{stem}.json"
+    if dst_json.exists():
+        with open(dst_json, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        changed = False
+        for det in data.get("detections", []):
+            mp = det.get("mask_path")
+            if mp and not Path(mp).exists():
+                cand = dst_masks / Path(mp).name
+                if cand.exists():
+                    det["mask_path"] = str(cand.resolve())
+                    changed = True
+        if changed:
+            with open(dst_json, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=2, ensure_ascii=False)
+
 
 def find_yolo_split_dir(dataset_dir: Path, split: str) -> tuple[Path | None, Path | None]:
     """
@@ -234,20 +405,9 @@ def has_yolo_dataset(project: str) -> bool:
     return train_images is not None
 
 
-# Загрузка цветов классов
 def load_class_colors() -> dict[str, str]:
-    """Загрузить цвета классов из classes.json."""
-    if not Path("classes.json").exists():
-        return {}
-    with open("classes.json", "r", encoding="utf-8") as f:
-        data = json.load(f)
-    # Исправление пробелов в ключах, если они есть
-    classes_list = data.get("classes", data.get("classes ", []))
-    return {
-        c.get("name", c.get("name ", "")).strip(): c.get("color", "#808080").strip()
-        for c in classes_list
-    }
-
+    """Загрузить цвета классов из classes.json / data.yaml."""
+    return get_class_colors(None)
 
 CLASS_COLORS = load_class_colors()
 
@@ -258,17 +418,21 @@ PAGE_EXTRACT = "Извлечение кадров"
 PAGE_PIPELINE = "Пайплайн"
 PAGE_REVIEW = "Review"
 PAGE_SPOTCHECK = "Spot Check"
+PAGE_MERGE_PROJECTS = "Объединение проектов (группы классов)"
 PAGE_CONVERT = "Конвертация"
 PAGE_MERGE = "Объединение датасетов"
 PAGE_TRAIN = " Обучение"
 PAGE_TEST = "Тест модели"
-PAGE_BENCHMARK = "Бенчмарк"  # 
+PAGE_BENCHMARK = "Бенчмарк"
+PAGE_TRAIN_HEAD = "Обучение головы"
+PAGE_MERGED_MODEL = "Merged-модель"
 
 st.sidebar.title("Auto-Labeling")
 page = st.sidebar.radio(
     "Навигация",
     [PAGE_HOME, PAGE_UPLOAD, PAGE_EXTRACT, PAGE_PIPELINE, PAGE_REVIEW, PAGE_SPOTCHECK,
-     PAGE_CONVERT, PAGE_MERGE, PAGE_TRAIN, PAGE_TEST, PAGE_BENCHMARK],
+     PAGE_MERGE_PROJECTS, PAGE_CONVERT, PAGE_MERGE, PAGE_TRAIN, PAGE_TEST, PAGE_BENCHMARK,
+     PAGE_TRAIN_HEAD, PAGE_MERGED_MODEL],
     index=0,
 )
 
@@ -409,12 +573,26 @@ elif page == PAGE_PIPELINE:
         st.error(f" Кадры не найдены в {frames_dir}")
         st.stop()
 
-    with open("classes.json", "r", encoding="utf-8") as f:
-        classes_data = json.load(f)
+    available_classes_files = sorted(
+        [str(p) for p in Path(".").glob("classes*.json")] +
+        [str(p) for p in Path(".").glob("classes*.yaml")] +
+        [str(p) for p in Path(".").glob("classes*.yml")]
+    )
 
-    classes_list = classes_data.get("classes", classes_data.get("classes ", []))
-    class_names = [c.get("name", c.get("name ", "")).strip() for c in classes_list]
+    if not available_classes_files:
+        available_classes_files = ["classes.json"]
 
+    selected_classes_file = st.selectbox(
+        "Файл классов (classes.json)",
+        available_classes_files,
+        help="Выберите файл, если пайплайн запускается по отдельной группе классов",
+    )
+
+    try:
+        class_names = load_class_names_from_file(selected_classes_file)
+    except Exception as e:
+        st.error(f"Не удалось прочитать классы из {selected_classes_file}: {e}")
+        class_names = []
     if "pipeline_classes_select" not in st.session_state:
         st.session_state.pipeline_classes_select = list(class_names)
 
@@ -442,8 +620,11 @@ elif page == PAGE_PIPELINE:
 
     if st.button("Запустить пайплайн", width="stretch", disabled=not selected_classes):
         with st.spinner("Запуск пайплайна..."):
-            result = api_post("/run-pipeline", {"project": selected_project, "classes": selected_classes})
-
+            result = api_post("/run-pipeline", {
+                "project": selected_project,
+                "classes": selected_classes,
+                "classes_file": selected_classes_file,   # ← добавлено
+            })
             if "task_id" in result:
                 task_id = result["task_id"]
                 st.info(f"Задача запущена: {task_id}")
@@ -521,13 +702,18 @@ elif page == PAGE_REVIEW:
         key="review_view_mode",
     )
 
-    if view_mode == "🖍️ Аннотированная":
-        image_path = find_annotated_image(stem, selected_project) or find_original_image(stem, selected_project)
+    if view_mode == "Аннотированная":
+        image_path = find_annotated_image(stem, selected_project)
+        if image_path is None:
+            image_path = find_original_image(stem, selected_project)
+            if image_path:
+                st.info("Аннотированная версия не найдена, показан оригинал")
     else:
-        image_path = find_original_image(stem, selected_project) or find_annotated_image(stem, selected_project)
-
+        image_path = find_original_image(stem, selected_project)
+        if image_path is None:
+            st.warning("Оригинал не найден (frames/ отсутствует или файл удалён)")
+            image_path = find_annotated_image(stem, selected_project)
     col_img, col_det = st.columns([1.5, 1])
-
     with col_img:
         if image_path:
             st.image(str(image_path), width="stretch")
@@ -639,7 +825,6 @@ elif page == PAGE_REVIEW:
             move_to_clean(stem, selected_project)
             st.success(f"✅ {stem} перенесен в clean/")
             st.rerun()
-
 elif page == PAGE_SPOTCHECK:
     st.title("Spot Check — контроль качества пайплайна")
  
@@ -838,7 +1023,7 @@ elif page == PAGE_SPOTCHECK:
                     for mask in src_masks.glob(f"{stem}_*"):
                         shutil.move(str(mask), str(dst_masks / mask.name))
                 
-                # Обновляем статус внутри файла, чтобы он попал в работу
+                # Обновляем статус и mask_path внутри файла
                 review_json_path = review_dir / f"{stem}.json"
                 if review_json_path.exists():
                     with open(review_json_path, "r", encoding="utf-8") as f:
@@ -846,6 +1031,12 @@ elif page == PAGE_SPOTCHECK:
                     for det in review_data.get("detections", []):
                         det["qc_bucket"] = "needs_review"
                         det["qc_reason"] = "возврат из spot check: ошибка пайплайна"
+                        # mask_path мог указывать на clean/masks — обновляем на review/masks
+                        mp = det.get("mask_path")
+                        if mp and not Path(mp).exists():
+                            cand = dst_masks / Path(mp).name
+                            if cand.exists():
+                                det["mask_path"] = str(cand.resolve())
                     with open(review_json_path, "w", encoding="utf-8") as f:
                         json.dump(review_data, f, indent=2, ensure_ascii=False)
 
@@ -895,6 +1086,53 @@ elif page == PAGE_SPOTCHECK:
                 st.session_state.spotcheck_active = False
                 st.rerun()
 
+elif page == PAGE_MERGE_PROJECTS:
+    st.title("🧩 Объединение проектов (группы классов)")
+
+    st.markdown("""
+    Если разные группы классов гонялись как отдельные проекты (одни и те же кадры,
+    но каждый проект — свой `classes.json` с подмножеством классов), эта страница
+    сливает их `ann/clean/*.json` в один новый проект — по совпадению имени кадра.
+
+    ⚠️ Берутся только кадры, которые прошли review (лежат в `clean/`) **во всех**
+    выбранных проектах сразу.
+    """)
+
+    projects = get_projects()
+    if len(projects) < 2:
+        st.warning("⚠️ Нужно минимум 2 проекта.")
+        st.stop()
+
+    selected_projects = st.multiselect("Проекты-группы для объединения", options=projects)
+    output_project = st.text_input("Имя нового проекта", "merged_groups")
+    
+    # Сделали поле опциональным с понятной подсказкой
+    classes_file = st.text_input(
+        "classes.json (опционально — если пусто, соберётся автоматически)",
+        value="",
+        help="Если оставить пустым, скрипт сам соберёт список классов из всех проектов"
+    )
+
+    if st.button(" Объединить проекты", width="stretch", disabled=len(selected_projects) < 2):
+        with st.spinner("Объединение..."):
+            result = api_post("/merge-projects", {
+                "projects": selected_projects,
+                "output_project": output_project,
+                "classes_file": classes_file if classes_file.strip() else None,  # ← передаём None вместо пустой строки
+            })
+            if "task_id" in result:
+                task_id = result["task_id"]
+                status_text = st.empty()
+                while True:
+                    status = api_get(f"/task/{task_id}")
+                    status_text.text(f"Статус: {status.get('status')} - {status.get('message')}")
+                    if status.get("status") in ["done", "failed"]:
+                        break
+                    time.sleep(2)
+                if status.get("status") == "done":
+                    st.success(f"✅ {status.get('message')}. Теперь можно конвертировать проект «{output_project}» в YOLO.")
+                else:
+                    st.error(f"❌ {status.get('message')}")
 elif page == PAGE_CONVERT:
     st.title("Конвертация в YOLO формат")
 
@@ -910,11 +1148,41 @@ elif page == PAGE_CONVERT:
     if not clean_dir.exists() or not list(clean_dir.glob("*.json")):
         st.warning("Нет данных для конвертации. Проверьте все детекции в Review.")
         st.stop()
+    available_classes_files = sorted(
+        [str(p) for p in Path(".").glob("classes*.json")] +
+        [str(p) for p in Path(".").glob("classes*.yaml")] +
+        [str(p) for p in Path(".").glob("classes*.yml")]
+    )
 
+    if not available_classes_files:
+        available_classes_files = ["classes.json"]
+
+    default_index = 0
+    if "classes.json" in available_classes_files:
+        default_index = available_classes_files.index("classes.json")
+
+    selected_classes_file = st.selectbox(
+        "Файл классов",
+        available_classes_files,
+        index=default_index,
+        help="Используется при конвертации в YOLO"
+    )
+
+    val_ratio = st.slider(
+        "Доля val",
+        min_value=0.05,
+        max_value=0.5,
+        value=0.2,
+        step=0.05,
+        help="Если backend и convert_to_yolo_seg.py поддерживают --val-ratio"
+    )
     if st.button("Конвертировать в YOLO", width="stretch"):
         with st.spinner("Конвертация..."):
-            result = api_post("/convert-to-yolo", {"project": selected_project})
-
+            result = api_post("/convert-to-yolo", {
+                "project": selected_project,
+                "classes_file": selected_classes_file,
+                "val_ratio": val_ratio,
+            })
             if "task_id" in result:
                 task_id = result["task_id"]
                 st.info(f"Задача запущена: {task_id}")
@@ -978,7 +1246,25 @@ elif page == PAGE_MERGE:
         options=projects_with_dataset,
         help="Берутся ВСЕ картинки (train+val) каждого проекта — дальше пересобираются в новый честный сплит",
     )
+    available_classes_files = sorted(
+        [str(p) for p in Path(".").glob("classes*.json")] +
+        [str(p) for p in Path(".").glob("classes*.yaml")] +
+        [str(p) for p in Path(".").glob("classes*.yml")]
+    )
 
+    if not available_classes_files:
+        available_classes_files = ["classes.json"]
+
+    default_index = 0
+    if "classes.json" in available_classes_files:
+        default_index = available_classes_files.index("classes.json")
+
+    classes_file_for_yaml = st.selectbox(
+        "Файл классов для итогового data.yaml",
+        available_classes_files,
+        index=default_index,
+        help="Из него берутся names и colors для объединённого датасета"
+    )
     st.subheader("2. Имя нового проекта")
     new_project_name = st.text_input("Введите имя для объединенного проекта", "merged_dataset")
     new_project_dir = PROJECTS_DIR / new_project_name
@@ -1073,11 +1359,9 @@ elif page == PAGE_MERGE:
                         if total_to_copy:
                             progress_bar.progress(min(1.0, total_copied / total_to_copy))
 
-                # 4. data.yaml под новый макет 
-                with open("classes.json", "r", encoding="utf-8") as f:
-                    classes_data = json.load(f)
-                classes_list = classes_data.get("classes", classes_data.get("classes ", []))
-                names = [c.get("name", c.get("name ", "")).strip() for c in classes_list]
+                # 4. data.yaml под новый макет + цвета
+                names = load_class_names_from_file(classes_file_for_yaml)
+                colors = load_class_colors_from_file(classes_file_for_yaml)
 
                 data_yaml = {
                     "path": str(new_dataset_dir.resolve()),
@@ -1086,6 +1370,10 @@ elif page == PAGE_MERGE:
                     "nc": len(names),
                     "names": names,
                 }
+
+                if colors:
+                    data_yaml["colors"] = colors
+
                 if "test" in splits:
                     data_yaml["test"] = "test/images"
 
@@ -1143,7 +1431,7 @@ elif page == PAGE_TRAIN:
 
     col1, col2 = st.columns(2)
     with col1:
-        base_model = st.selectbox("Базовая модель (transfer learning)", ["yolo26n.pt", "yolov8n.pt"])
+        base_model = st.selectbox("Базовая модель (transfer learning)", ["yolo11n-seg.pt", "yolo11s-seg.pt", "yolo11m-seg.pt"])
         epochs = st.number_input("Эпохи", min_value=1, max_value=1000, value=100)
         imgsz = st.selectbox("Размер изображения", [416, 512, 640, 768, 960], index=2)
     with col2:
@@ -1151,7 +1439,9 @@ elif page == PAGE_TRAIN:
         device = st.selectbox("Устройство", ["0", "cpu"], help="'0' — первая GPU, 'cpu' — без GPU")
 
     if st.button("Запустить обучение", width="stretch"):
-        result = api_post("/train-model", {
+        data_yaml_path = PROJECTS_DIR / selected_project / "dataset_yolo" / "data.yaml"
+
+        payload = {
             "project": selected_project,
             "run_name": run_name,
             "base_model": base_model,
@@ -1159,7 +1449,12 @@ elif page == PAGE_TRAIN:
             "imgsz": int(imgsz),
             "batch": int(batch),
             "device": device,
-        })
+        }
+
+        if data_yaml_path.exists():
+            payload["data_yaml"] = str(data_yaml_path)
+
+        result = api_post("/train-model", payload)
 
         if "task_id" in result:
             st.session_state["train_task_id"] = result["task_id"]
@@ -1231,13 +1526,21 @@ elif page == PAGE_TEST:
             output_path = output_path.with_suffix(".mp4")
 
         with st.spinner("Инференс..."):
-            result = api_post("/test-model", {
+            data_yaml_path = PROJECTS_DIR / selected_project / "dataset_yolo" / "data.yaml"
+
+            payload = {
                 "weights_path": weights_path,
                 "input_path": str(input_path),
                 "output_path": str(output_path),
-                "classes_file": "classes.json",
                 "conf": conf,
-            })
+                "project": selected_project,
+                "classes_file": "classes.json",  # fallback для старого сервера
+            }
+
+            if data_yaml_path.exists():
+                payload["data_yaml"] = str(data_yaml_path)
+
+            result = api_post("/test-model", payload)
 
             if "task_id" in result:
                 task_id = result["task_id"]
@@ -1348,7 +1651,7 @@ elif page == PAGE_BENCHMARK:
                         "mAP50-95": f"{metrics.get('mAP50-95', 0):.3f}"
                     })
                 st.dataframe(pd.DataFrame(class_data), use_container_width=True, hide_index=True)
--
+
             if "speed" in result:
                 st.subheader("Скорость (FPS)")
                 speed_data = []
@@ -1379,3 +1682,293 @@ elif page == PAGE_BENCHMARK:
             
             time.sleep(3)
             st.rerun()
+
+elif page == PAGE_TRAIN_HEAD:
+    st.title("Обучение новой головы (Вариант A)")
+    st.markdown("""
+    Обучает новую Segment-голову поверх **замороженного backbone** старой модели.
+    После этого шага можно собрать единую merged-модель на странице **Merged-модель**.
+
+    ⚠️ Выбирай в качестве базовых весов **ту же модель**, которую потом будешь мёржить —
+    иначе backbone нового и старого чекпоинта разойдутся.
+    """)
+
+    projects = get_projects()
+    projects_with_runs = [p for p in projects if (PROJECTS_DIR / p / "runs").exists()]
+
+    col1, col2 = st.columns(2)
+    with col1:
+        head_options = get_old_head_options(projects_with_runs)
+        selected_old = st.selectbox(
+            "Старая голова (базовые веса)",
+            list(head_options.keys()),
+            key="head_base_select",
+        )
+        old_weights = head_options[selected_old]
+        st.caption(f"`{old_weights}`")
+        if selected_old in COCO_HEADS and not Path(old_weights).exists():
+            st.caption("Файла .pt нет рядом — ultralytics скачает его при первом запуске обучения.")
+
+    with col2:
+        projects_with_dataset = [p for p in projects if has_yolo_dataset(p)]
+        if not projects_with_dataset:
+            st.warning("Нет проектов с датасетом новых классов.")
+            st.stop()
+        new_head_project = st.selectbox(
+            "Проект с датасетом НОВЫХ классов",
+            projects_with_dataset,
+            key="head_new_project",
+        )
+        new_dataset_dir = PROJECTS_DIR / new_head_project / "dataset_yolo"
+        st.caption(f"датасет: `{new_dataset_dir}`")
+    run_name = st.text_input("Название запуска новой головы", value="new_head_v1", key="head_run_name")
+
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        epochs = st.number_input("Эпохи", 1, 500, 100, key="head_epochs")
+        imgsz = st.selectbox("Размер изображения", [416, 512, 640, 768], index=2, key="head_imgsz")
+    with c2:
+        batch = st.number_input("Batch size", 1, 128, 16, key="head_batch")
+        device = st.selectbox("Устройство", ["0", "cpu"], key="head_device")
+    with c3:
+        patience = st.number_input("Patience (early stop)", 10, 200, 50, key="head_patience")
+
+    if st.button("🚀 Запустить обучение головы", type="primary", use_container_width=True):
+        result = api_post("/train-model", {
+            "project": new_head_project,
+            "run_name": run_name,
+            "base_model": old_weights,   # train_new_head отличается от train_student тем, что base_model — это .pt, а не архитектура
+            "epochs": int(epochs),
+            "imgsz": int(imgsz),
+            "batch": int(batch),
+            "device": device,
+        })
+        if "task_id" in result:
+            st.session_state["head_task_id"] = result["task_id"]
+            st.rerun()
+
+    if "head_task_id" in st.session_state:
+        st.markdown("---")
+        status = api_get(f"/task/{st.session_state['head_task_id']}")
+        st.progress(min(1.0, max(0.0, status.get("progress", 0.0))))
+        st.text(f"Статус: {status.get('status')} — {status.get('message')}")
+        if status.get("status") in ("done", "failed"):
+            if status.get("status") == "done":
+                st.success("✅ Голова обучена! Перейди на страницу **Merged-модель** для сборки.")
+            else:
+                st.error("Ошибка обучения")
+            if st.button("Очистить статус", key="head_clear"):
+                del st.session_state["head_task_id"]
+                st.rerun()
+        else:
+            time.sleep(3)
+            st.rerun()
+
+
+elif page == PAGE_MERGED_MODEL:
+    st.title("Merged-модель (Вариант A)")
+    st.markdown("""
+    **Шаг 1:** Собрать единую модель из базового чекпоинта + новой головы → `merged_model.pt`.  
+    **Шаг 2:** Протестировать на картинке/видео.
+    """)
+
+    projects = get_projects()
+    projects_with_runs = [p for p in projects if (PROJECTS_DIR / p / "runs").exists()]
+
+    if not projects_with_runs:
+        st.warning("Нет обученных моделей.")
+        st.stop()
+
+        st.subheader("1. Сборка merged-модели")
+    col1, col2 = st.columns(2)
+    with col1:
+        old_options = get_old_head_options(projects_with_runs)
+        selected_old = st.selectbox(
+            "Старая (базовая) модель",
+            list(old_options.keys()),
+            key="mg_old_select",
+        )
+        old_weights = old_options[selected_old]
+        st.caption(f"`{old_weights}`")
+        if selected_old in COCO_HEADS:
+            st.info(
+                "Новая голова (справа) должна быть обучена именно на этой базовой модели, "
+                "иначе backbone не совпадёт при мердже."
+            )
+    with col2:
+        new_proj = st.selectbox("Проект новой головы", projects_with_runs, key="mg_new_proj")
+        runs_new = api_get(f"/training-runs/{new_proj}").get("runs", [])
+        if not runs_new:
+            st.warning("Нет best.pt")
+            st.stop()
+        new_run = st.selectbox("Запуск новой головы", [r["name"] for r in runs_new], key="mg_new_run")
+        new_weights = next(r["weights_path"] for r in runs_new if r["name"] == new_run)
+        st.caption(f"`{new_weights}`")
+
+    merged_save_path = st.text_input(
+        "Куда сохранить merged_model.pt",
+        value=str(PROJECTS_DIR / new_proj / "merged_models" / "merged_model.pt"),
+        key="mg_save_path",
+    )
+
+    if st.button("🔧 Собрать merged-модель", type="primary", use_container_width=True):
+        Path(merged_save_path).parent.mkdir(parents=True, exist_ok=True)
+        result = api_post("/build-merged-model", {
+            "old_weights": old_weights,
+            "new_weights": new_weights,
+            "save_path": merged_save_path,
+        })
+        if "task_id" in result:
+            st.session_state["build_merged_task_id"] = result["task_id"]
+            st.rerun()
+
+    if "build_merged_task_id" in st.session_state:
+        status = api_get(f"/task/{st.session_state['build_merged_task_id']}")
+        st.progress(min(1.0, max(0.0, status.get("progress", 0.0))))
+        st.text(f"Сборка: {status.get('status')} — {status.get('message')}")
+        if status.get("status") in ("done", "failed"):
+            if status.get("status") == "done":
+                st.success(f"✅ Модель собрана: `{merged_save_path}`")
+            else:
+                st.error(status.get("message"))
+            if st.button("Очистить статус сборки", key="mg_clear_build"):
+                del st.session_state["build_merged_task_id"]
+                st.rerun()
+
+    st.markdown("---")
+    st.subheader("2. Тест merged-модели")
+
+    merged_models_resp = api_get("/merged-models")
+    merged_models = merged_models_resp.get("models", [])
+
+    test_mode = st.radio("Режим теста", ["Merged (единая модель)", "Dual (две модели)"],
+                          horizontal=True, key="mg_test_mode")
+
+    if test_mode == "Merged (единая модель)":
+        if not merged_models:
+            st.info("Нет собранных merged_model.pt. Сначала выполни сборку выше.")
+            st.stop()
+        selected_merged = st.selectbox("Merged-модель (.pt)",
+                                        options=merged_models,
+                                        format_func=lambda x: x["name"],
+                                        key="mg_sel_merged")
+        merged_weights_path = selected_merged["path"]
+        conf = st.slider("Confidence", 0.05, 0.95, 0.25, 0.05, key="mg_conf_merged")
+        imgsz_t = st.selectbox("Размер", [416, 512, 640, 768], index=2, key="mg_imgsz_merged")
+
+        uploaded = st.file_uploader("Картинка или видео", type=["jpg", "jpeg", "png", "mp4", "avi"],
+                                     key="mg_upload_merged")
+        if uploaded and st.button("▶️ Запустить тест (merged)", use_container_width=True):
+            test_dir = Path("test_merged_uploads")
+            test_dir.mkdir(exist_ok=True)
+            in_path = test_dir / uploaded.name
+            out_path = test_dir / f"result_{in_path.stem}{in_path.suffix}"
+            in_path.write_bytes(uploaded.getbuffer())
+
+            result = api_post("/test-merged-model", {
+                "merged_weights": merged_weights_path,
+                "input_path": str(in_path),
+                "output_path": str(out_path),
+                "conf": conf,
+                "imgsz": imgsz_t,
+            })
+            if "task_id" in result:
+                st.session_state["test_merged_task_id"] = result["task_id"]
+                st.session_state["test_merged_out"] = str(out_path)
+                st.rerun()
+
+        if "test_merged_task_id" in st.session_state:
+            status = api_get(f"/task/{st.session_state['test_merged_task_id']}")
+            if status.get("status") == "done":
+                st.success("✅ Готово!")
+                out = st.session_state.get("test_merged_out", "")
+                if out and Path(out).exists():
+                    if Path(out).suffix.lower() in (".jpg", ".jpeg", ".png"):
+                        st.image(out, width="stretch")
+                    else:
+                        st.video(out)
+                if status.get("result"):
+                    st.json(status["result"])
+                if st.button("Очистить", key="mg_clear_test_merged"):
+                    del st.session_state["test_merged_task_id"]
+                    st.session_state.pop("test_merged_out", None)
+                    st.rerun()
+            elif status.get("status") == "failed":
+                st.error(status.get("message"))
+                if st.button("Сбросить", key="mg_reset_merged"):
+                    del st.session_state["test_merged_task_id"]
+                    st.rerun()
+            else:
+                st.text(f"Статус: {status.get('status')} — {status.get('message')}")
+                time.sleep(2)
+                st.rerun()
+
+    else:  # Dual
+        col_d1, col_d2 = st.columns(2)
+        with col_d1:
+            d_old_proj = st.selectbox("Проект старой модели", projects_with_runs, key="dual_old_proj")
+            d_runs_old = api_get(f"/training-runs/{d_old_proj}").get("runs", [])
+            if not d_runs_old:
+                st.warning("Нет best.pt")
+                st.stop()
+            d_old_run = st.selectbox("Запуск старой", [r["name"] for r in d_runs_old], key="dual_old_run")
+            d_old_weights = next(r["weights_path"] for r in d_runs_old if r["name"] == d_old_run)
+        with col_d2:
+            d_new_proj = st.selectbox("Проект новой модели", projects_with_runs, key="dual_new_proj")
+            d_runs_new = api_get(f"/training-runs/{d_new_proj}").get("runs", [])
+            if not d_runs_new:
+                st.warning("Нет best.pt")
+                st.stop()
+            d_new_run = st.selectbox("Запуск новой", [r["name"] for r in d_runs_new], key="dual_new_run")
+            d_new_weights = next(r["weights_path"] for r in d_runs_new if r["name"] == d_new_run)
+
+        d_conf = st.slider("Confidence", 0.05, 0.95, 0.25, 0.05, key="dual_conf")
+        d_dedup = st.checkbox("Cross-model IoU дедупликация (страховка)", value=False, key="dual_dedup")
+
+        d_uploaded = st.file_uploader("Картинка или видео", type=["jpg", "jpeg", "png", "mp4", "avi"],
+                                       key="dual_upload")
+        if d_uploaded and st.button("▶️ Запустить dual-тест", use_container_width=True):
+            test_dir = Path("test_dual_uploads")
+            test_dir.mkdir(exist_ok=True)
+            d_in = test_dir / d_uploaded.name
+            d_out = test_dir / f"dual_result_{d_in.stem}{d_in.suffix}"
+            d_in.write_bytes(d_uploaded.getbuffer())
+
+            result = api_post("/test-model-dual", {
+                "weights_old": d_old_weights,
+                "weights_new": d_new_weights,
+                "input_path": str(d_in),
+                "output_path": str(d_out),
+                "conf": d_conf,
+                "cross_model_dedup": d_dedup,
+            })
+            if "task_id" in result:
+                st.session_state["test_dual_task_id"] = result["task_id"]
+                st.session_state["test_dual_out"] = str(d_out)
+                st.rerun()
+
+        if "test_dual_task_id" in st.session_state:
+            status = api_get(f"/task/{st.session_state['test_dual_task_id']}")
+            if status.get("status") == "done":
+                st.success("✅ Готово!")
+                d_out = st.session_state.get("test_dual_out", "")
+                if d_out and Path(d_out).exists():
+                    if Path(d_out).suffix.lower() in (".jpg", ".jpeg", ".png"):
+                        st.image(d_out, width="stretch")
+                    else:
+                        st.video(d_out)
+                if status.get("result"):
+                    st.json(status["result"])
+                if st.button("Очистить", key="dual_clear"):
+                    del st.session_state["test_dual_task_id"]
+                    st.session_state.pop("test_dual_out", None)
+                    st.rerun()
+            elif status.get("status") == "failed":
+                st.error(status.get("message"))
+                if st.button("Сбросить", key="dual_reset"):
+                    del st.session_state["test_dual_task_id"]
+                    st.rerun()
+            else:
+                st.text(f"Статус: {status.get('status')} — {status.get('message')}")
+                time.sleep(2)
+                st.rerun()

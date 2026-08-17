@@ -19,7 +19,7 @@ import sys
 from pathlib import Path
 
 import numpy as np
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageFont
 from teachers.pipeline_utils import iou
 
 # ─────────────────────────────────────────────────────────────────────
@@ -231,17 +231,67 @@ def load_class_colors(classes_file: str) -> dict[str, tuple[int, int, int]]:
             colors[c["name"]] = (r, g, b)
     return colors
 
+def _label_rect_overlaps(rect, placed_rects) -> bool:
+    rx1, ry1, rx2, ry2 = rect
+    for px1, py1, px2, py2 in placed_rects:
+        if rx1 < px2 and rx2 > px1 and ry1 < py2 and ry2 > py1:
+            return True
+    return False
 
+
+def _find_free_label_pos(x1, y1, label_w, label_h, placed_rects, img_h, step):
+    """Ищет свободное место для метки, сдвигаясь вниз вдоль левого края бокса."""
+    y = y1 + 2
+    for _ in range(20):  # ограничиваем число попыток
+        rect = (x1 + 2, y, x1 + 2 + label_w, y + label_h)
+        if not _label_rect_overlaps(rect, placed_rects) or y + label_h > img_h:
+            return x1 + 2, y
+        y += step
+    return x1 + 2, y  # если совсем не нашли — рисуем как есть, дальше некуда
+_FONT_CACHE = {}
+
+def _get_font(size: int):
+    if size in _FONT_CACHE:
+        return _FONT_CACHE[size]
+
+    candidates = [
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+        "/opt/conda/envs/sam3/fonts/DejaVuSans-Bold.ttf",
+        "DejaVuSans-Bold.ttf",
+        "/opt/conda/envs/sam3/lib/python3.10/site-packages/matplotlib/mpl-data/fonts/ttf/DejaVuSans-Bold.ttf"
+    ]
+    font = None
+    for path in candidates:
+        try:
+            font = ImageFont.truetype(path, size)
+            break
+        except (OSError, IOError):
+            continue
+
+    if font is None:
+        # Pillow >= 10.1 умеет масштабировать даже дефолтный шрифт через size=
+        try:
+            font = ImageFont.load_default(size=size)
+        except TypeError:
+            # старые версии Pillow — size не поддерживается, дефолт останется мелким
+            font = ImageFont.load_default()
+            print(f"[qc][WARN] TTF-шрифт не найден нигде, используется нескейлящийся дефолт", file=sys.stderr)
+
+    _FONT_CACHE[size] = font
+    return font
 def draw_qc_annotated(image_path: str, detections: list[dict], out_path: str,
                        class_colors: dict[str, tuple[int, int, int]] = None):
-    """
-    Рисует маски (цвет из classes.json) + боксы (цвет по статусу QC) + номера детекций.
-    """
     if class_colors is None:
         class_colors = {}
     default_color = (150, 150, 150)
     img = Image.open(image_path).convert("RGB")
     overlay = Image.new("RGBA", img.size, (0, 0, 0, 0))
+
+    MASK_ALPHA = 70  # 0-255, ниже = прозрачнее
+
+    # масштаб относительно "эталонного" разрешения 1280px по большей стороне
+    scale = max(img.size) / 1280
+    scale = max(0.6, min(scale, 4.0))  # разумные пределы
 
     masks_drawn = 0
     masks_missing = 0
@@ -260,7 +310,7 @@ def draw_qc_annotated(image_path: str, detections: list[dict], out_path: str,
         threshold = 127 if mask_np.max() > 1 else 0
         mask_array = mask_np > threshold
         colored = np.zeros((*mask_array.shape, 4), dtype=np.uint8)
-        colored[mask_array] = (*rgb, 150)  # альфа 70 — полупрозрачность
+        colored[mask_array] = (*rgb, MASK_ALPHA)
         overlay = Image.alpha_composite(overlay, Image.fromarray(colored, mode="RGBA"))
         masks_drawn += 1
 
@@ -271,32 +321,44 @@ def draw_qc_annotated(image_path: str, detections: list[dict], out_path: str,
     img = Image.alpha_composite(img.convert("RGBA"), overlay).convert("RGB")
     draw = ImageDraw.Draw(img)
 
+    # шрифт, масштабируемый под разрешение — bitmap-дефолт PIL не масштабируется вообще
+    font_size = int(16 * scale)
+    try:
+        font = ImageFont.truetype("DejaVuSans-Bold.ttf", font_size)
+    except (OSError, IOError):
+        font = ImageFont.load_default()  # fallback, если шрифта нет в системе
+
+    placed_label_rects = []  # какие области под метки уже заняты на этой картинке
+
     for idx, det in enumerate(detections):
         bucket = det["qc_bucket"]
         cls = det["class"]
         x1, y1, x2, y2 = det["bbox"]
 
         outline_color = BUCKET_OUTLINE[bucket]
-
-        width = 4 if bucket == "needs_review" else (2 if bucket == "accepted" else 1)
+        base_width = 4 if bucket == "needs_review" else (2 if bucket == "accepted" else 1)
+        width = max(1, int(base_width * scale))
         draw.rectangle([x1, y1, x2, y2], outline=outline_color, width=width)
 
-        
         num_label = str(idx)
         try:
-            nb = draw.textbbox((0, 0), num_label)
+            nb = draw.textbbox((0, 0), num_label, font=font)
             nw, nh = nb[2] - nb[0], nb[3] - nb[1]
         except AttributeError:
-            nw, nh = 8, 12
-        draw.ellipse(
-            [x1 + 2, y1 + 2, x1 + nw + 8, y1 + nh + 6],
-            fill=outline_color,
-        )
-        draw.text((x1 + 5, y1 + 3), num_label, fill=(255, 255, 255))
+            nw, nh = font_size, font_size
 
+        pad = int(6 * scale)
+        label_w = nw + pad * 2
+        label_h = nh + pad * 2
+
+        # ищем свободное место, чтобы не наложиться на уже нарисованные номера
+        lx, ly = _find_free_label_pos(x1, y1, label_w, label_h, placed_label_rects, img.size[1], step=label_h + 2)
+        placed_label_rects.append((lx, ly, lx + label_w, ly + label_h))
+
+        draw.ellipse([lx, ly, lx + label_w, ly + label_h], fill=outline_color)
+        draw.text((lx + pad, ly + pad // 2), num_label, fill=(255, 255, 255), font=font)
     img.save(out_path)
     return masks_drawn, masks_missing
-
 def get_image_size(data: dict) -> tuple[int, int]:
     w, h = data.get("width"), data.get("height")
     if w and h: return int(w), int(h)

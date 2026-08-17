@@ -21,13 +21,39 @@ class MemoryCallback:
         torch.cuda.empty_cache()
 
 
-def load_class_names(classes_file: str) -> list[str]:
-    with open(classes_file, "r", encoding="utf-8") as f:
-        data = json.load(f)
+def load_data_yaml(data_yaml_path: str) -> dict:
+    path = Path(data_yaml_path)
+    if not path.exists():
+        raise FileNotFoundError(f"data.yaml не найден: {path}")
 
-    classes_list = data.get("classes", data.get("classes ", []))
-    classes_sorted = sorted(classes_list, key=lambda c: c.get("index", c.get("index ", 0)))
-    return [c.get("name", c.get("name ", "")).strip() for c in classes_sorted]
+    with open(path, "r", encoding="utf-8") as f:
+        data = yaml.safe_load(f) or {}
+
+    if not isinstance(data, dict):
+        raise ValueError(f"data.yaml должен быть словарём: {data_yaml_path}")
+
+    return data
+
+
+def get_class_names_from_yaml(data: dict) -> list[str]:
+    """
+    Поддерживает варианты:
+      names: [class1, class2]
+      names: {0: class1, 1: class2}
+      classes: [class1, class2]
+    """
+    names = data.get("names", data.get("classes"))
+
+    if names is None:
+        raise ValueError("В data.yaml нет поля names или classes")
+
+    if isinstance(names, dict):
+        return [str(names[k]).strip() for k in sorted(names, key=lambda x: int(x))]
+
+    if isinstance(names, list):
+        return [str(x).strip() for x in names]
+
+    raise ValueError("Поле names в data.yaml должно быть списком или словарём")
 
 
 def find_split_dirs(dataset_dir: Path, split: str) -> tuple[Path | None, Path | None]:
@@ -35,13 +61,15 @@ def find_split_dirs(dataset_dir: Path, split: str) -> tuple[Path | None, Path | 
     Находит папки images и labels для сплита, поддерживая оба формата.
     Возвращает (images_dir, labels_dir) или (None, None).
     """
-    img_dir = dataset_dir / "images" / split
-    lbl_dir = dataset_dir / "labels" / split
+    # Новый формат: dataset_dir/split/images
+    img_dir = dataset_dir / split / "images"
+    lbl_dir = dataset_dir / split / "labels"
     if img_dir.exists():
         return img_dir, lbl_dir if lbl_dir.exists() else None
     
-    img_dir = dataset_dir / split / "images"
-    lbl_dir = dataset_dir / split / "labels"
+    # Старый формат: dataset_dir/images/split
+    img_dir = dataset_dir / "images" / split
+    lbl_dir = dataset_dir / "labels" / split
     if img_dir.exists():
         return img_dir, lbl_dir if lbl_dir.exists() else None
     
@@ -50,26 +78,42 @@ def find_split_dirs(dataset_dir: Path, split: str) -> tuple[Path | None, Path | 
 
 def merge_yolo_datasets(source_dirs: list[Path], target_dir: Path) -> None:
     """Объединяет несколько YOLO-датасетов в один с префиксами имён."""
-    for split in ("train", "val"):
-        (target_dir / "images" / split).mkdir(parents=True, exist_ok=True)
-        (target_dir / "labels" / split).mkdir(parents=True, exist_ok=True)
+    split_map = {
+        "train": "train",
+        "val": "val",
+        "valid": "val",
+    }
+
+    # Создаем структуру: target_dir/split/images и target_dir/split/labels
+    for dst_split in set(split_map.values()):
+        (target_dir / dst_split / "images").mkdir(parents=True, exist_ok=True)
+        (target_dir / dst_split / "labels").mkdir(parents=True, exist_ok=True)
 
     for src in source_dirs:
         project_name = src.parent.name
-        for split in ("train", "valid"):
-            img_src_dir, lbl_src_dir = find_split_dirs(src, split)
+
+        for src_split, dst_split in split_map.items():
+            img_src_dir, lbl_src_dir = find_split_dirs(src, src_split)
             if img_src_dir is None:
                 continue
 
             for img_path in sorted(img_src_dir.glob("*")):
                 if img_path.suffix.lower() not in (".jpg", ".jpeg", ".png"):
                     continue
+
                 new_stem = f"{project_name}_{img_path.stem}"
-                shutil.copy(img_path, target_dir / "images" / split / f"{new_stem}{img_path.suffix}")
+
+                # Копируем в target_dir/dst_split/images/
+                shutil.copy(
+                    img_path,
+                    target_dir / dst_split / "images" / f"{new_stem}{img_path.suffix}"
+                )
 
                 if lbl_src_dir:
                     lbl_path = lbl_src_dir / f"{img_path.stem}.txt"
-                    dst_lbl = target_dir / "labels" / split / f"{new_stem}.txt"
+                    # Копируем в target_dir/dst_split/labels/
+                    dst_lbl = target_dir / dst_split / "labels" / f"{new_stem}.txt"
+
                     if lbl_path.exists():
                         shutil.copy(lbl_path, dst_lbl)
                     else:
@@ -88,8 +132,8 @@ def main():
     p.add_argument("--target-dir", required=True)
     p.add_argument("--runs-dir", required=True)
     p.add_argument("--run-name", required=True)
-    p.add_argument("--classes-file", default="classes.json")
-    p.add_argument("--base-model", default="yolo11n.pt")
+    p.add_argument("--data-yaml", required=True, help="data.yaml с names и опционально colors")
+    p.add_argument("--base-model", default="yolo11n-seg.pt")
     p.add_argument("--epochs", type=int, default=100)
     p.add_argument("--imgsz", type=int, default=640)
     p.add_argument("--batch", type=int, default=16)
@@ -110,23 +154,36 @@ def main():
     write_progress(progress_file, {"stage": "merge", "progress": 0.0, "message": "Объединение датасетов..."})
     merge_yolo_datasets(source_dirs, target_dir)
 
-    class_names = load_class_names(args.classes_file)
-    data_yaml = {
-        "path": str(target_dir.resolve()),
-        "train": "images/train",
-        "val": "images/val",
-        "names": {i: name for i, name in enumerate(class_names)},
-    }
-    data_yaml_path = target_dir / "data.yaml"
-    with open(data_yaml_path, "w", encoding="utf-8") as f:
-        yaml.safe_dump(data_yaml, f, allow_unicode=True, sort_keys=False)
+    source_yaml = load_data_yaml(args.data_yaml)
+    class_names = get_class_names_from_yaml(source_yaml)
 
-    n_train = len(list((target_dir / "images" / "train").glob("*")))
-    n_val = len(list((target_dir / "images" / "val").glob("*")))
+    # Считаем количество картинок в train и val
+    n_train = len(list((target_dir / "train" / "images").glob("*")))
+    n_val = len(list((target_dir / "val" / "images").glob("*")))
 
     if n_train == 0:
         write_progress(progress_file, {"stage": "failed", "progress": 0.0, "message": "0 train-картинок"})
         sys.exit(1)
+
+    # Если val пустой, используем train для валидации (fallback)
+    val_path = "val/images" if n_val > 0 else "train/images"
+
+    data_yaml = {
+        "path": str(target_dir.resolve()),
+        "train": "train/images",
+        "val": val_path,
+        "nc": len(class_names),
+        "names": class_names,
+    }
+
+    # Если в исходном data.yaml были цвета, сохраняем их в итоговый data.yaml
+    if "colors" in source_yaml:
+        data_yaml["colors"] = source_yaml["colors"]
+
+    # Записываем data.yaml ОДИН раз
+    data_yaml_path = target_dir / "data.yaml"
+    with open(data_yaml_path, "w", encoding="utf-8") as f:
+        yaml.safe_dump(data_yaml, f, allow_unicode=True, sort_keys=False)
 
     write_progress(progress_file, {
         "stage": "train",
